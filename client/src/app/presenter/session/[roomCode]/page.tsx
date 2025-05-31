@@ -44,8 +44,7 @@ interface Question {
 export default function PresenterSession() {
   const params = useParams();
   const searchParams = useSearchParams();
-  const { sendMessage, lastMessage } = useWebSocket();
-
+  const { sendMessage, lastMessage, isConnected, reconnect } = useWebSocket();
   const router = useRouter();
 
   const roomCode = params.roomCode as string;
@@ -58,8 +57,9 @@ export default function PresenterSession() {
   const [activeTab, setActiveTab] = useState("all");
   const [showEndSessionDialog, setShowEndSessionDialog] = useState(false);
   const [sessionClosed, setSessionClosed] = useState(false);
+  const [initialized, setInitialized] = useState(false);
 
-  // Use refs to track if we've already initialized
+  // Refs must be declared with other hooks
   const hasInitialized = useRef(false);
   const lastProcessedMessage = useRef<any>(null);
 
@@ -201,38 +201,6 @@ export default function PresenterSession() {
     }
   }, []); // Empty dependency array since we're using functional updates
 
-  // Initialize session only once
-  useEffect(() => {
-    if (!hasInitialized.current) {
-      hasInitialized.current = true;
-
-      const link = `${window.location.origin}/attendee/join?code=${roomCode}`;
-      setShareLink(link);
-
-      // Join the session as presenter
-      sendMessage({
-        type: "join",
-        payload: {
-          roomId: roomCode,
-          attendee: presenterName,
-        },
-      });
-
-      // Get initial session data
-      sendMessage({
-        type: "getSession",
-        payload: { roomId: roomCode },
-      });
-    }
-  }, [roomCode, presenterName, sendMessage]);
-
-  // Handle incoming messages
-  useEffect(() => {
-    if (lastMessage) {
-      handleMessage(lastMessage);
-    }
-  }, [lastMessage, handleMessage]);
-
   const copyRoomCode = useCallback(() => {
     navigator.clipboard.writeText(roomCode);
     toast("Room code copied!");
@@ -280,7 +248,98 @@ export default function PresenterSession() {
     [roomCode, sendMessage]
   );
 
-  // Update the filteredQuestions calculation in PresenterSession component
+  const handleEndSession = useCallback(() => {
+    sendMessage({
+      type: "close",
+      payload: {
+        roomId: roomCode,
+        owner: presenterName,
+      },
+    });
+    toast.success("Session ended successfully");
+    router.push("/");
+  }, [roomCode, presenterName, sendMessage, router]);
+
+  useEffect(() => {
+    if (isConnected && initialized) {
+      // When reconnected, request the latest session data
+      sendMessage({
+        type: "getSession",
+        payload: { roomId: roomCode },
+      });
+    }
+  }, [isConnected, initialized, roomCode, sendMessage]);
+
+  // Modify your initialization effect
+  useEffect(() => {
+    if (isConnected && !initialized) {
+      const link = `${window.location.origin}/attendee/join?code=${roomCode}`;
+      setShareLink(link);
+
+      sendMessage({
+        type: "join",
+        payload: {
+          roomId: roomCode,
+          attendee: presenterName,
+        },
+      });
+
+      sendMessage({
+        type: "getSession",
+        payload: { roomId: roomCode },
+      });
+
+      setInitialized(true);
+    }
+  }, [isConnected, initialized, roomCode, presenterName, sendMessage]);
+
+  // Initialize session only once
+  useEffect(() => {
+    if (!hasInitialized.current) {
+      hasInitialized.current = true;
+
+      const link = `${window.location.origin}/attendee/join?code=${roomCode}`;
+      setShareLink(link);
+
+      // Join the session as presenter
+      sendMessage({
+        type: "join",
+        payload: {
+          roomId: roomCode,
+          attendee: presenterName,
+        },
+      });
+
+      // Get initial session data
+      sendMessage({
+        type: "getSession",
+        payload: { roomId: roomCode },
+      });
+    }
+  }, [roomCode, presenterName, sendMessage]);
+
+  useEffect(() => {
+    if (isConnected && !initialized) {
+      // Initialize session only once when connected
+      sendMessage({
+        type: "join",
+        payload: {
+          roomId: params.roomCode,
+          attendee: searchParams.get("presenter") || "Presenter",
+        },
+      });
+      setInitialized(true);
+    }
+  }, [isConnected, initialized, params.roomCode, searchParams, sendMessage]);
+
+  // Handle incoming messages
+  useEffect(() => {
+    if (lastMessage) {
+      handleMessage(lastMessage);
+    }
+  }, [lastMessage, handleMessage]);
+
+  // Calculate filtered questions
   const filteredQuestions = questions
     .filter((q) => {
       if (activeTab === "all") return true;
@@ -314,17 +373,20 @@ export default function PresenterSession() {
     0
   );
 
-  const handleEndSession = useCallback(() => {
-    sendMessage({
-      type: "close",
-      payload: {
-        roomId: roomCode,
-        owner: presenterName,
-      },
-    });
-    toast.success("Session ended successfully");
-    router.push("/");
-  }, [roomCode, presenterName, sendMessage, router]);
+  // MOVE ALL CONDITIONAL RENDERING TO THE END, AFTER ALL HOOKS
+  if (!isConnected) {
+    return (
+      <div className="fixed inset-0 flex items-center justify-center bg-background/80 z-50">
+        <div className="text-center p-6 bg-white rounded-lg shadow-lg dark:bg-gray-800">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto mb-4"></div>
+          <h3 className="text-lg font-medium mb-2">Connecting to session...</h3>
+          <Button variant="outline" className="mt-4" onClick={reconnect}>
+            Reconnect Now
+          </Button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="container mx-auto px-4 py-8">

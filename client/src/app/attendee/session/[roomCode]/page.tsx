@@ -42,7 +42,7 @@ interface Question {
 export default function AttendeeSession() {
   const params = useParams();
   const searchParams = useSearchParams();
-  const { sendMessage, lastMessage } = useWebSocket();
+  const { sendMessage, lastMessage, isConnected, reconnect} = useWebSocket();
   const router = useRouter();
 
   const roomCode = params.roomCode as string;
@@ -55,10 +55,12 @@ export default function AttendeeSession() {
   const [presenterName, setPresenterName] = useState("Presenter");
   const [votedQuestions, setVotedQuestions] = useState<Set<string>>(new Set());
   const [sessionClosed, setSessionClosed] = useState(false);
+const [initialized, setInitialized] = useState(false);
 
   // Use refs to track if we've already initialized
   const hasInitialized = useRef(false);
   const lastProcessedMessage = useRef<any>(null);
+
 
   // Memoize the message handler to prevent recreating it on each render
   const handleMessage = useCallback(
@@ -198,6 +200,16 @@ export default function AttendeeSession() {
     [attendeeName]
   ); // Include attendeeName in dependencies
 
+
+    useEffect(() => {
+    if (isConnected && initialized) {
+      // When reconnected, request the latest session data
+      sendMessage({
+        type: "getSession",
+        payload: { roomId: roomCode },
+      });
+    }
+  }, [isConnected, initialized, roomCode, sendMessage]);
   // Initialize session only once
   useEffect(() => {
     if (!hasInitialized.current && roomCode && attendeeName) {

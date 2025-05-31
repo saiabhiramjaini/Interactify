@@ -1,86 +1,51 @@
-import { WebSocketServer, WebSocket } from "ws"
-import { websocketService } from './services/websocketService'
-import {
-  handleCreateSession,
-  handleJoinSession,
-  handleGetSession,
-  handleQuestion,
-  handleVote,
-  handleMarkQuestion,
-  handleLeaveSession,
-  handleCloseSession,
-} from './handlers/messageHandlers'
+import express from 'express'
+import http from 'http'
+import { createWebSocketServer } from './wsServer'
+import connectDB from './db/connect'
 
-const wss = new WebSocketServer({ port: 8080 })
+const app = express()
+const server = http.createServer(app)
 
-wss.on("connection", (socket: WebSocket) => {
-  websocketService.addClient(socket)
+// Create WebSocket server
+const wss = createWebSocketServer()
 
-  socket.on("error", (error) => {
-    console.error("WebSocket error:", error)
-  })
-
-  socket.on("message", (message) => {
-    try {
-      const parsedMessage = JSON.parse(message.toString())
-
-      switch (parsedMessage.type) {
-        case "create":
-          handleCreateSession(socket, parsedMessage.payload)
-          break
-        case "join":
-          handleJoinSession(socket, parsedMessage.payload)
-          break
-        case "getSession":
-          handleGetSession(socket, parsedMessage.payload)
-          break
-        case "question":
-          handleQuestion(socket, parsedMessage.payload)
-          break
-        case "vote":
-          handleVote(socket, parsedMessage.payload)
-          break
-        case "markQuestion":
-          handleMarkQuestion(socket, parsedMessage.payload)
-          break
-        case "leave":
-          handleLeaveSession(socket, parsedMessage.payload)
-          break
-        case "close":
-          handleCloseSession(socket, parsedMessage.payload)
-          break
-        default:
-          console.error("Unknown message type:", parsedMessage.type)
-          websocketService.sendToClient(socket, {
-            type: "error",
-            payload: { message: "Unknown message type" },
-          })
-      }
-    } catch (error) {
-      console.error("Error parsing message:", error)
-      websocketService.sendToClient(socket, {
-        type: "error",
-        payload: { message: "Invalid message format" },
-      })
-    }
-  })
-
-  socket.on("close", () => {
-    const client = websocketService.removeClient(socket)
-    
-    if (client && client.roomId && client.attendee) {
-      // Handle cleanup when client disconnects
-      const { sessionService } = require('./services/sessionService')
-      const session = sessionService.leaveSession(client.roomId, client.attendee)
-      
-      if (session) {
-        websocketService.broadcastToRoom(client.roomId, {
-          type: "attendeeLeft",
-          payload: { attendee: client.attendee, attendees: session.attendees },
-        })
-      }
-    }
+// Handle HTTP to WebSocket upgrade
+server.on('upgrade', (request, socket, head) => {
+  // You can add authentication/validation here if needed
+  console.log('Upgrading to WebSocket connection')
+  
+  wss.handleUpgrade(request, socket, head, (socket) => {
+    wss.emit('connection', socket, request)
   })
 })
 
-console.log("WebSocket server is running on ws://localhost:8080")
+// Express middleware
+app.use(express.json())
+app.use((req, res, next) => {
+  // Enable CORS if needed
+  res.header('Access-Control-Allow-Origin', '*')
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept')
+  next()
+})
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.status(200).json({ 
+    status: 'healthy',
+    websocket: 'ws://localhost:8080' 
+  })
+})
+
+connectDB();
+
+// Start the server
+const PORT = 8080 // Changed to match your screenshot
+server.listen(PORT, () => {
+  console.log(`HTTP server is running on http://localhost:${PORT}`)
+  console.log(`WebSocket server is running on ws://localhost:${PORT}`)
+  
+  // Handle server errors
+  server.on('error', (error) => {
+    console.error('Server error:', error)
+  })
+})

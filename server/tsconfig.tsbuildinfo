@@ -1,1 +1,1 @@
-{"root":["./src/index.ts","./src/handlers/messagehandlers.ts","./src/services/sessionservice.ts","./src/services/websocketservice.ts","./src/types/index.ts","./src/utils/generateroomid.ts"],"version":"5.7.3"}
+{"root":["./src/index.ts","./src/wsserver.ts","./src/db/connect.ts","./src/db/models/sessionmodel.ts","./src/handlers/messagehandlers.ts","./src/services/sessionservice.ts","./src/services/websocketservice.ts","./src/types/index.ts","./src/utils/generateroomid.ts"],"version":"5.7.3"}
