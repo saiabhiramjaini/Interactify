@@ -1,6 +1,6 @@
 "use client"
 
-import { createContext, useContext, useEffect, useRef, ReactNode } from 'react'
+import { createContext, useContext, useEffect, useRef, useState, ReactNode } from 'react'
 
 interface WebSocketMessage {
   type: string
@@ -9,12 +9,14 @@ interface WebSocketMessage {
 
 interface WebSocketContextType {
   sendMessage: (message: WebSocketMessage) => void
+  lastMessage: WebSocketMessage | null
 }
 
 const WebSocketContext = createContext<WebSocketContextType | null>(null)
 
 export const WebSocketProvider = ({ children }: { children: ReactNode }) => {
   const ws = useRef<WebSocket | null>(null)
+  const [lastMessage, setLastMessage] = useState<WebSocketMessage | null>(null)
 
   useEffect(() => {
     // Connect to WebSocket server
@@ -22,6 +24,12 @@ export const WebSocketProvider = ({ children }: { children: ReactNode }) => {
 
     ws.current.onopen = () => {
       console.log('Connected to WebSocket server')
+    }
+
+    ws.current.onmessage = (event) => {
+      const message = JSON.parse(event.data)
+      console.log('Message received:', message)
+      setLastMessage(message)
     }
 
     ws.current.onclose = () => {
@@ -37,6 +45,7 @@ export const WebSocketProvider = ({ children }: { children: ReactNode }) => {
 
   const sendMessage = (message: WebSocketMessage) => {
     if (ws.current && ws.current.readyState === WebSocket.OPEN) {
+      console.log('Sending message:', message)
       ws.current.send(JSON.stringify(message))
     } else {
       console.error('WebSocket is not connected')
@@ -44,7 +53,7 @@ export const WebSocketProvider = ({ children }: { children: ReactNode }) => {
   }
 
   return (
-    <WebSocketContext.Provider value={{ sendMessage }}>
+    <WebSocketContext.Provider value={{ sendMessage, lastMessage }}>
       {children}
     </WebSocketContext.Provider>
   )

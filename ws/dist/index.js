@@ -2,12 +2,28 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 const ws_1 = require("ws");
 let sessions = [];
+let clients = [];
 const generateRoomId = () => {
     return Math.random().toString(36).substring(2, 8).toUpperCase();
 };
 const wss = new ws_1.WebSocketServer({ port: 8080 });
+// Helper function to broadcast to all clients in a room
+const broadcastToRoom = (roomId, message, excludeSocket) => {
+    clients.forEach((client) => {
+        if (client.roomId === roomId && client.socket !== excludeSocket && client.socket.readyState === ws_1.WebSocket.OPEN) {
+            client.socket.send(JSON.stringify(message));
+        }
+    });
+};
+// Helper function to find session by roomId
+const findSession = (roomId) => {
+    return sessions.find((s) => s.roomId === roomId);
+};
 wss.on("connection", (socket) => {
     console.log("Client connected");
+    // Add client to connections list
+    const clientConnection = { socket };
+    clients.push(clientConnection);
     socket.on("error", (error) => {
         console.error("WebSocket error:", error);
     });
@@ -58,23 +74,30 @@ wss.on("connection", (socket) => {
     });
     socket.on("close", () => {
         console.log("Client disconnected");
-    });
-});
-console.log("WebSocket server is running on ws://localhost:8080");
-// Broadcast to all clients in a room except the sender
-const broadcastToRoom = (roomId, message, excludeSocket) => {
-    wss.clients.forEach((client) => {
-        if (client.readyState === ws_1.WebSocket.OPEN) {
-            // In a real app, you'd track which client is in which room
-            // For simplicity, we'll broadcast to all connected clients
-            if (client !== excludeSocket) {
-                client.send(JSON.stringify(message));
+        // Remove client from connections list
+        const index = clients.findIndex((c) => c.socket === socket);
+        if (index !== -1) {
+            const client = clients[index];
+            clients.splice(index, 1);
+            // If client was in a session, remove them from attendees
+            if (client.roomId && client.attendee) {
+                const session = findSession(client.roomId);
+                if (session) {
+                    session.attendees = session.attendees.filter((a) => a !== client.attendee);
+                    // Broadcast attendee left
+                    broadcastToRoom(client.roomId, {
+                        type: "attendeeLeft",
+                        payload: { attendee: client.attendee, attendees: session.attendees },
+                    });
+                }
             }
         }
     });
-};
+});
+console.log("WebSocket server is running on ws://localhost:8080");
 const handleCreateSession = (socket, payload) => {
     try {
+        console.log("Creating session with payload:", payload);
         const { sessionName, owner } = payload;
         const roomId = generateRoomId();
         const newSession = {
@@ -103,13 +126,19 @@ const handleCreateSession = (socket, payload) => {
 const handleJoinSession = (socket, payload) => {
     try {
         const { roomId, attendee } = payload;
-        const session = sessions.find((s) => s.roomId === roomId);
+        const session = findSession(roomId);
         if (!session) {
             socket.send(JSON.stringify({
                 type: "error",
                 payload: { message: "Session not found" },
             }));
             return;
+        }
+        // Update client connection info
+        const clientConnection = clients.find((c) => c.socket === socket);
+        if (clientConnection) {
+            clientConnection.roomId = roomId;
+            clientConnection.attendee = attendee;
         }
         if (!session.attendees.includes(attendee)) {
             session.attendees.push(attendee);
@@ -124,13 +153,10 @@ const handleJoinSession = (socket, payload) => {
                 questions: session.questions,
             },
         }));
-        // Notify other clients about new attendee
+        // Broadcast to other clients in the room that someone joined
         broadcastToRoom(roomId, {
             type: "attendeeJoined",
-            payload: {
-                attendee,
-                attendees: session.attendees,
-            },
+            payload: { attendee, attendees: session.attendees },
         }, socket);
         console.log("Attendee joined:", attendee, "to room:", roomId);
     }
@@ -145,7 +171,7 @@ const handleJoinSession = (socket, payload) => {
 const handleGetSession = (socket, payload) => {
     try {
         const { roomId } = payload;
-        const session = sessions.find((s) => s.roomId === roomId);
+        const session = findSession(roomId);
         if (!session) {
             socket.send(JSON.stringify({
                 type: "error",
@@ -174,7 +200,7 @@ const handleGetSession = (socket, payload) => {
 const handleQuestion = (socket, payload) => {
     try {
         const { roomId, questionText, author } = payload;
-        const session = sessions.find((s) => s.roomId === roomId);
+        const session = findSession(roomId);
         if (!session) {
             socket.send(JSON.stringify({
                 type: "error",
@@ -199,12 +225,10 @@ const handleQuestion = (socket, payload) => {
             highlighted: false,
         };
         session.questions.push(newQuestion);
-        // Notify all clients in the room
+        // Broadcast new question to all clients in the room
         broadcastToRoom(roomId, {
-            type: "questionAdded",
-            payload: {
-                question: newQuestion,
-            },
+            type: "question",
+            payload: newQuestion,
         });
         console.log("Question added:", newQuestion);
     }
@@ -219,7 +243,7 @@ const handleQuestion = (socket, payload) => {
 const handleVote = (socket, payload) => {
     try {
         const { roomId, questionText, voteType } = payload;
-        const session = sessions.find((s) => s.roomId === roomId);
+        const session = findSession(roomId);
         if (!session) {
             socket.send(JSON.stringify({
                 type: "error",
@@ -248,11 +272,13 @@ const handleVote = (socket, payload) => {
             }));
             return;
         }
-        // Notify all clients in the room about the vote
+        // Broadcast vote update to all clients in the room
         broadcastToRoom(roomId, {
-            type: "voteUpdated",
+            type: "vote",
             payload: {
-                question,
+                questionText,
+                upVotes: question.upVotes,
+                downVotes: question.downVotes,
             },
         });
         console.log("Vote recorded:", voteType, question);
@@ -268,7 +294,7 @@ const handleVote = (socket, payload) => {
 const handleMarkQuestion = (socket, payload) => {
     try {
         const { roomId, questionText, action } = payload;
-        const session = sessions.find((s) => s.roomId === roomId);
+        const session = findSession(roomId);
         if (!session) {
             socket.send(JSON.stringify({
                 type: "error",
@@ -284,17 +310,22 @@ const handleMarkQuestion = (socket, payload) => {
             }));
             return;
         }
+        let updatePayload = { questionText };
         if (action === "answered") {
             question.answered = true;
+            updatePayload.answered = true;
         }
         else if (action === "unanswered") {
             question.answered = false;
+            updatePayload.answered = false;
         }
         else if (action === "highlighted") {
             question.highlighted = true;
+            updatePayload.highlighted = true;
         }
         else if (action === "unhighlighted") {
             question.highlighted = false;
+            updatePayload.highlighted = false;
         }
         else {
             socket.send(JSON.stringify({
@@ -303,12 +334,10 @@ const handleMarkQuestion = (socket, payload) => {
             }));
             return;
         }
-        // Notify all clients in the room
+        // Broadcast question update to all clients in the room
         broadcastToRoom(roomId, {
-            type: "questionUpdated",
-            payload: {
-                question,
-            },
+            type: "markQuestion",
+            payload: updatePayload,
         });
         console.log("Question updated:", action, question);
     }
@@ -323,7 +352,7 @@ const handleMarkQuestion = (socket, payload) => {
 const handleLeaveSession = (socket, payload) => {
     try {
         const { roomId, attendee } = payload;
-        const session = sessions.find((s) => s.roomId === roomId);
+        const session = findSession(roomId);
         if (!session) {
             socket.send(JSON.stringify({
                 type: "error",
@@ -332,13 +361,16 @@ const handleLeaveSession = (socket, payload) => {
             return;
         }
         session.attendees = session.attendees.filter((a) => a !== attendee);
-        // Notify other clients in the room
+        // Update client connection info
+        const clientConnection = clients.find((c) => c.socket === socket);
+        if (clientConnection) {
+            clientConnection.roomId = undefined;
+            clientConnection.attendee = undefined;
+        }
+        // Broadcast to other clients in the room
         broadcastToRoom(roomId, {
             type: "attendeeLeft",
-            payload: {
-                attendee,
-                attendees: session.attendees,
-            },
+            payload: { attendee, attendees: session.attendees },
         }, socket);
         console.log("Attendee left:", attendee, "from room:", roomId);
     }
@@ -369,13 +401,18 @@ const handleCloseSession = (socket, payload) => {
             }));
             return;
         }
-        sessions.splice(sessionIndex, 1);
-        // Notify all clients in the room
+        // Broadcast session closure to all clients in the room
         broadcastToRoom(roomId, {
             type: "sessionClosed",
-            payload: {
-                message: "Session has been closed by the presenter",
-            },
+            payload: { roomId },
+        });
+        sessions.splice(sessionIndex, 1);
+        // Remove all clients from this room
+        clients.forEach((client) => {
+            if (client.roomId === roomId) {
+                client.roomId = undefined;
+                client.attendee = undefined;
+            }
         });
         console.log("Session closed:", roomId);
     }

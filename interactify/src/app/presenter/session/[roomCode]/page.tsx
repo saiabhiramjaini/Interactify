@@ -1,141 +1,330 @@
-"use client"
+"use client";
 
-import { useState, useEffect } from "react"
-import { useParams, useSearchParams } from "next/navigation"
-import Link from "next/link"
-import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Badge } from "@/components/ui/badge"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Input } from "@/components/ui/input"
-import { ArrowLeft, Copy, CheckCircle, MessageSquare, ThumbsUp, Users, Star, Circle } from "lucide-react"
-import { toast } from "sonner"
-import { useWebSocket } from "@/context/WebSocketContext"
+import { useState, useEffect, useRef, useCallback } from "react";
+import { useParams, useSearchParams, useRouter } from "next/navigation";
+import Link from "next/link";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Input } from "@/components/ui/input";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
+  ArrowLeft,
+  Copy,
+  CheckCircle,
+  MessageSquare,
+  ThumbsUp,
+  Users,
+  Star,
+  Circle,
+} from "lucide-react";
+import { toast } from "sonner";
+import { useWebSocket } from "@/context/WebSocketContext";
 
 interface Question {
-  id: string
-  text: string
-  votes: number
-  answered: boolean
-  highlighted: boolean
-  timestamp: string
+  questionText: string;
+  upVotes: number;
+  downVotes: number;
+  author: string;
+  createdAt: string;
+  answered: boolean;
+  highlighted: boolean;
 }
 
 export default function PresenterSession() {
-  const params = useParams()
-  const searchParams = useSearchParams()
-  const { sendMessage } = useWebSocket()
+  const params = useParams();
+  const searchParams = useSearchParams();
+  const { sendMessage, lastMessage } = useWebSocket();
 
-  const roomCode = params.roomCode as string
-  const sessionName = searchParams.get("name") || "Untitled Session"
-  const presenterName = searchParams.get("presenter") || "Presenter"
+  const router = useRouter();
 
-  const [shareLink, setShareLink] = useState("")
-  const [questions, setQuestions] = useState<Question[]>([])
-  const [activeTab, setActiveTab] = useState("all")
-  const [attendeeCount, setAttendeeCount] = useState(0)
+  const roomCode = params.roomCode as string;
+  const sessionName = searchParams.get("name") || "Untitled Session";
+  const presenterName = searchParams.get("presenter") || "Presenter";
 
+  const [shareLink, setShareLink] = useState("");
+  const [questions, setQuestions] = useState<Question[]>([]);
+  const [attendees, setAttendees] = useState<string[]>([]);
+  const [activeTab, setActiveTab] = useState("all");
+  const [showEndSessionDialog, setShowEndSessionDialog] = useState(false);
+  const [sessionClosed, setSessionClosed] = useState(false);
+
+  // Use refs to track if we've already initialized
+  const hasInitialized = useRef(false);
+  const lastProcessedMessage = useRef<any>(null);
+
+  // Memoize the message handler to prevent recreating it on each render
+  const handleMessage = useCallback((message: any) => {
+    // Prevent processing the same message twice
+    if (!message || message === lastProcessedMessage.current) {
+      return;
+    }
+    lastProcessedMessage.current = message;
+
+    switch (message.type) {
+      case "sessionJoined":
+        toast.success("Successfully joined the session!");
+        break;
+
+      case "sessionData":
+        // Use functional updates to avoid stale closures
+        setQuestions((prev) => {
+          const newQuestions = message.payload.questions || [];
+          // Only update if the data actually changed
+          if (JSON.stringify(prev) !== JSON.stringify(newQuestions)) {
+            return newQuestions;
+          }
+          return prev;
+        });
+
+        setAttendees((prev) => {
+          const newAttendees = message.payload.attendees || [];
+          if (JSON.stringify(prev) !== JSON.stringify(newAttendees)) {
+            return newAttendees;
+          }
+          return prev;
+        });
+        break;
+
+      case "attendeeJoined":
+        setAttendees((prev) => {
+          const attendee = message.payload.attendee;
+          if (!prev.includes(attendee)) {
+            toast(`${attendee} joined the session`);
+            return [...prev, attendee];
+          }
+          return prev;
+        });
+        break;
+
+      case "attendeeLeft":
+        setAttendees((prev) => {
+          const attendee = message.payload.attendee;
+          const newAttendees = prev.filter((a) => a !== attendee);
+          if (newAttendees.length !== prev.length) {
+            toast(`${attendee} left the session`);
+            return newAttendees;
+          }
+          return prev;
+        });
+        break;
+
+      case "question":
+        setQuestions((prev) => {
+          const newQuestion = message.payload;
+          // Check if question already exists
+          const exists = prev.some(
+            (q) =>
+              q.questionText === newQuestion.questionText &&
+              q.author === newQuestion.author
+          );
+
+          if (!exists) {
+            toast(`New question from ${newQuestion.author}`);
+            return [...prev, newQuestion];
+          }
+          return prev;
+        });
+        break;
+
+      case "vote":
+        setQuestions((prev) =>
+          prev.map((q) => {
+            if (q.questionText === message.payload.questionText) {
+              // Only update if votes actually changed
+              if (
+                q.upVotes !== message.payload.upVotes ||
+                q.downVotes !== message.payload.downVotes
+              ) {
+                return {
+                  ...q,
+                  upVotes: message.payload.upVotes,
+                  downVotes: message.payload.downVotes,
+                };
+              }
+            }
+            return q;
+          })
+        );
+        break;
+
+      case "markQuestion":
+        setQuestions((prev) =>
+          prev.map((q) => {
+            if (q.questionText === message.payload.questionText) {
+              const updates: Partial<Question> = {};
+
+              if (message.payload.answered !== undefined) {
+                updates.answered = message.payload.answered;
+              }
+              if (message.payload.highlighted !== undefined) {
+                updates.highlighted = message.payload.highlighted;
+              }
+
+              // Only update if something actually changed
+              if (
+                Object.keys(updates).some(
+                  (key) =>
+                    q[key as keyof Question] !== updates[key as keyof Question]
+                )
+              ) {
+                return { ...q, ...updates };
+              }
+            }
+            return q;
+          })
+        );
+        break;
+
+      case "sessionClosed":
+        setSessionClosed(true);
+        toast.error("The session has been ended by the presenter");
+        setTimeout(() => router.push("/"), 3000);
+        break;
+
+      case "error":
+        toast.error(message.payload.message);
+        break;
+
+      default:
+        console.log("Unhandled message type:", message.type);
+    }
+  }, []); // Empty dependency array since we're using functional updates
+
+  // Initialize session only once
   useEffect(() => {
-    setShareLink(`${window.location.origin}/attendee/join?code=${roomCode}`)
-    
-    const ws = new WebSocket('ws://localhost:8080')
-    
-    // Get session data
-    ws.onopen = () => {
-      ws.send(JSON.stringify({
+    if (!hasInitialized.current) {
+      hasInitialized.current = true;
+
+      const link = `${window.location.origin}/attendee/join?code=${roomCode}`;
+      setShareLink(link);
+
+      // Join the session as presenter
+      sendMessage({
+        type: "join",
+        payload: {
+          roomId: roomCode,
+          attendee: presenterName,
+        },
+      });
+
+      // Get initial session data
+      sendMessage({
         type: "getSession",
-        payload: { roomId: roomCode }
-      }))
+        payload: { roomId: roomCode },
+      });
     }
+  }, [roomCode, presenterName, sendMessage]);
 
-    // Listen for updates
-    ws.onmessage = (event) => {
-      const data = JSON.parse(event.data)
-      
-      if (data.type === "sessionData") {
-        setAttendeeCount(data.payload.attendees.length)
-        
-        const formattedQuestions = data.payload.questions.map((q: any) => ({
-          id: `q${Date.now()}`,
-          text: q.questionText,
-          votes: q.upVotes - q.downVotes,
-          answered: false,
-          highlighted: false,
-          timestamp: new Date(q.createdAt).toISOString()
-        }))
-        
-        setQuestions(formattedQuestions)
-      } else if (data.type === "questionAdded") {
-        const newQuestion = {
-          id: `q${Date.now()}`,
-          text: data.payload.question.questionText,
-          votes: 0,
-          answered: false,
-          highlighted: false,
-          timestamp: new Date().toISOString()
-        }
-        setQuestions(prev => [...prev, newQuestion])
-      } else if (data.type === "attendeeJoined") {
-        setAttendeeCount(prev => prev + 1)
-      } else if (data.type === "attendeeLeft") {
-        setAttendeeCount(prev => prev - 1)
-      }
+  // Handle incoming messages
+  useEffect(() => {
+    if (lastMessage) {
+      handleMessage(lastMessage);
     }
+  }, [lastMessage, handleMessage]);
 
-    return () => {
-      ws.close()
-    }
-  }, [roomCode])
+  const copyRoomCode = useCallback(() => {
+    navigator.clipboard.writeText(roomCode);
+    toast("Room code copied!");
+  }, [roomCode]);
 
-  const sortedQuestions = [...questions].sort((a, b) => b.votes - a.votes)
-  const filteredQuestions = sortedQuestions.filter((q) => {
-    if (activeTab === "all") return true
-    if (activeTab === "answered") return q.answered
-    if (activeTab === "unanswered") return !q.answered
-    if (activeTab === "highlighted") return q.highlighted
-    return true
-  })
+  const toggleAnswered = useCallback(
+    (questionText: string) => {
+      setQuestions((prev) => {
+        const question = prev.find((q) => q.questionText === questionText);
+        if (!question) return prev;
 
-  const copyRoomCode = () => {
-    navigator.clipboard.writeText(roomCode)
-    toast("Room code copied!")
-  }
-
-  const toggleAnswered = (id: string, questionText: string) => {
-    setQuestions(prev => prev.map(q => {
-      if (q.id === id) {
-        const newAnsweredState = !q.answered
         sendMessage({
           type: "markQuestion",
           payload: {
             roomId: roomCode,
             questionText,
-            action: newAnsweredState ? "answered" : "unanswered"
-          }
-        })
-        return { ...q, answered: newAnsweredState }
-      }
-      return q
-    }))
-  }
+            action: question.answered ? "unanswered" : "answered",
+          },
+        });
 
-  const toggleHighlighted = (id: string, questionText: string) => {
-    setQuestions(prev => prev.map(q => {
-      if (q.id === id) {
-        const newHighlightedState = !q.highlighted
+        return prev;
+      });
+    },
+    [roomCode, sendMessage]
+  );
+
+  const toggleHighlighted = useCallback(
+    (questionText: string) => {
+      setQuestions((prev) => {
+        const question = prev.find((q) => q.questionText === questionText);
+        if (!question) return prev;
+
         sendMessage({
           type: "markQuestion",
           payload: {
             roomId: roomCode,
             questionText,
-            action: newHighlightedState ? "highlighted" : "unhighlighted"
-          }
-        })
-        return { ...q, highlighted: newHighlightedState }
+            action: question.highlighted ? "unhighlighted" : "highlighted",
+          },
+        });
+
+        return prev;
+      });
+    },
+    [roomCode, sendMessage]
+  );
+
+  // Update the filteredQuestions calculation in PresenterSession component
+  const filteredQuestions = questions
+    .filter((q) => {
+      if (activeTab === "all") return true;
+      if (activeTab === "answered") return q.answered;
+      if (activeTab === "unanswered") return !q.answered;
+      if (activeTab === "highlighted") return q.highlighted;
+      return true;
+    })
+    .sort((a, b) => {
+      // First sort by highlighted status (highlighted first)
+      if (a.highlighted !== b.highlighted) {
+        return a.highlighted ? -1 : 1;
       }
-      return q
-    }))
-  }
+
+      // Then sort by vote score (upVotes - downVotes)
+      const aScore = a.upVotes - a.downVotes;
+      const bScore = b.upVotes - b.downVotes;
+
+      // If scores are equal, newer questions come first
+      if (bScore === aScore) {
+        return (
+          new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+        );
+      }
+
+      return bScore - aScore;
+    });
+
+  const totalVotes = questions.reduce(
+    (acc, q) => acc + q.upVotes - q.downVotes,
+    0
+  );
+
+  const handleEndSession = useCallback(() => {
+    sendMessage({
+      type: "close",
+      payload: {
+        roomId: roomCode,
+        owner: presenterName,
+      },
+    });
+    toast.success("Session ended successfully");
+    router.push("/");
+  }, [roomCode, presenterName, sendMessage, router]);
 
   return (
     <div className="container mx-auto px-4 py-8">
@@ -151,6 +340,7 @@ export default function PresenterSession() {
             <p className="text-sm text-gray-500">Hosted by {presenterName}</p>
           </div>
         </div>
+
         <div className="flex flex-wrap items-center gap-2">
           <Badge variant="outline" className="flex items-center gap-1">
             <MessageSquare className="h-3 w-3" />
@@ -158,11 +348,11 @@ export default function PresenterSession() {
           </Badge>
           <Badge variant="outline" className="flex items-center gap-1">
             <ThumbsUp className="h-3 w-3" />
-            {questions.reduce((acc, q) => acc + q.votes, 0)} Votes
+            {totalVotes} Votes
           </Badge>
           <Badge variant="outline" className="flex items-center gap-1">
             <Users className="h-3 w-3" />
-            {attendeeCount} Attendees
+            {attendees.length} Attendees
           </Badge>
           <div className="flex items-center gap-2 rounded-md border px-3 py-1">
             <span className="text-sm font-medium">Room: {roomCode}</span>
@@ -175,6 +365,14 @@ export default function PresenterSession() {
               <Copy className="h-3 w-3" />
             </Button>
           </div>
+
+          <Button
+            variant="destructive"
+            onClick={() => setShowEndSessionDialog(true)}
+            className="ml-2"
+          >
+            End Session
+          </Button>
         </div>
       </div>
 
@@ -210,8 +408,8 @@ export default function PresenterSession() {
                   size="icon"
                   className="h-8 w-8"
                   onClick={() => {
-                    navigator.clipboard.writeText(shareLink)
-                    toast("Link copied!")
+                    navigator.clipboard.writeText(shareLink);
+                    toast("Link copied!");
                   }}
                 >
                   <Copy className="h-3 w-3" />
@@ -225,7 +423,7 @@ export default function PresenterSession() {
               </h3>
               <div className="mt-2 grid grid-cols-2 gap-2">
                 <div className="rounded-lg border p-2 text-center">
-                  <div className="text-2xl font-bold">{attendeeCount}</div>
+                  <div className="text-2xl font-bold">{attendees.length}</div>
                   <div className="text-xs text-gray-500">Attendees</div>
                 </div>
                 <div className="rounded-lg border p-2 text-center">
@@ -239,9 +437,7 @@ export default function PresenterSession() {
                   <div className="text-xs text-gray-500">Answered</div>
                 </div>
                 <div className="rounded-lg border p-2 text-center">
-                  <div className="text-2xl font-bold">
-                    {questions.reduce((acc, q) => acc + q.votes, 0)}
-                  </div>
+                  <div className="text-2xl font-bold">{totalVotes}</div>
                   <div className="text-xs text-gray-500">Total Votes</div>
                 </div>
               </div>
@@ -263,49 +459,73 @@ export default function PresenterSession() {
             <TabsContent value="all" className="mt-4">
               <QuestionsList
                 questions={filteredQuestions}
-                toggleAnswered={toggleAnswered}
-                toggleHighlighted={toggleHighlighted}
+                onToggleAnswered={toggleAnswered}
+                onToggleHighlighted={toggleHighlighted}
               />
             </TabsContent>
 
             <TabsContent value="unanswered" className="mt-4">
               <QuestionsList
                 questions={filteredQuestions}
-                toggleAnswered={toggleAnswered}
-                toggleHighlighted={toggleHighlighted}
+                onToggleAnswered={toggleAnswered}
+                onToggleHighlighted={toggleHighlighted}
               />
             </TabsContent>
 
             <TabsContent value="answered" className="mt-4">
               <QuestionsList
                 questions={filteredQuestions}
-                toggleAnswered={toggleAnswered}
-                toggleHighlighted={toggleHighlighted}
+                onToggleAnswered={toggleAnswered}
+                onToggleHighlighted={toggleHighlighted}
               />
             </TabsContent>
 
             <TabsContent value="highlighted" className="mt-4">
               <QuestionsList
                 questions={filteredQuestions}
-                toggleAnswered={toggleAnswered}
-                toggleHighlighted={toggleHighlighted}
+                onToggleAnswered={toggleAnswered}
+                onToggleHighlighted={toggleHighlighted}
               />
             </TabsContent>
           </Tabs>
         </div>
       </div>
+
+      <AlertDialog
+        open={showEndSessionDialog}
+        onOpenChange={setShowEndSessionDialog}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>End this session?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently close the session for all attendees. You
+              won't be able to reopen it.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleEndSession}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              End Session
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
-  )
+  );
 }
 
 function QuestionsList({
   questions,
-  toggleAnswered,
-  toggleHighlighted,
+  onToggleAnswered,
+  onToggleHighlighted,
 }: {
-  questions: Question[]
-  toggleAnswered: (id: string, questionText: string) => void
-  toggleHighlighted: (id: string, questionText: string) => void
+  questions: Question[];
+  onToggleAnswered: (questionText: string) => void;
+  onToggleHighlighted: (questionText: string) => void;
 }) {
   if (questions.length === 0) {
     return (
@@ -318,14 +538,14 @@ function QuestionsList({
           </p>
         </div>
       </div>
-    )
+    );
   }
 
   return (
     <div className="space-y-4">
       {questions.map((question) => (
         <Card
-          key={question.id}
+          key={`${question.questionText}-${question.author}`}
           className={`transition-all ${
             question.highlighted ? "border-2 border-yellow-400" : ""
           } ${question.answered ? "bg-gray-50 dark:bg-gray-800/50" : ""}`}
@@ -337,7 +557,7 @@ function QuestionsList({
                   variant="outline"
                   className="flex h-10 w-10 items-center justify-center rounded-full text-lg"
                 >
-                  {question.votes}
+                  {question.upVotes - question.downVotes}
                 </Badge>
                 <span className="mt-1 text-xs text-gray-500">votes</span>
               </div>
@@ -349,7 +569,7 @@ function QuestionsList({
                       question.answered ? "text-gray-500" : ""
                     }`}
                   >
-                    {question.text}
+                    {question.questionText}
                   </p>
                   <div className="ml-4 flex gap-1">
                     <Button
@@ -358,7 +578,7 @@ function QuestionsList({
                       className={`h-8 w-8 ${
                         question.highlighted ? "text-yellow-500" : ""
                       }`}
-                      onClick={() => toggleHighlighted(question.id, question.text)}
+                      onClick={() => onToggleHighlighted(question.questionText)}
                       title={
                         question.highlighted
                           ? "Remove highlight"
@@ -376,7 +596,7 @@ function QuestionsList({
                       className={`h-8 w-8 ${
                         question.answered ? "text-green-500" : ""
                       }`}
-                      onClick={() => toggleAnswered(question.id, question.text)}
+                      onClick={() => onToggleAnswered(question.questionText)}
                       title={
                         question.answered
                           ? "Mark as unanswered"
@@ -391,9 +611,10 @@ function QuestionsList({
                     </Button>
                   </div>
                 </div>
-                <div className="mt-2 flex items-center text-xs text-gray-500">
+                <div className="mt-2 flex items-center justify-between text-xs text-gray-500">
+                  <span>Asked by {question.author}</span>
                   <span>
-                    {new Date(question.timestamp).toLocaleTimeString([], {
+                    {new Date(question.createdAt).toLocaleTimeString([], {
                       hour: "2-digit",
                       minute: "2-digit",
                     })}
@@ -405,5 +626,5 @@ function QuestionsList({
         </Card>
       ))}
     </div>
-  )
+  );
 }

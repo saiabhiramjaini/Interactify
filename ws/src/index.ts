@@ -19,7 +19,14 @@ interface Question {
   highlighted: boolean
 }
 
+interface ClientConnection {
+  socket: WebSocket
+  roomId?: string
+  attendee?: string
+}
+
 let sessions: Session[] = []
+let clients: ClientConnection[] = []
 
 const generateRoomId = () => {
   return Math.random().toString(36).substring(2, 8).toUpperCase()
@@ -27,8 +34,25 @@ const generateRoomId = () => {
 
 const wss = new WebSocketServer({ port: 8080 })
 
+// Helper function to broadcast to all clients in a room
+const broadcastToRoom = (roomId: string, message: any, excludeSocket?: WebSocket) => {
+  clients.forEach((client) => {
+    if (client.roomId === roomId && client.socket !== excludeSocket && client.socket.readyState === WebSocket.OPEN) {
+      client.socket.send(JSON.stringify(message))
+    }
+  })
+}
+
+// Helper function to find session by roomId
+const findSession = (roomId: string) => {
+  return sessions.find((s) => s.roomId === roomId)
+}
+
 wss.on("connection", (socket) => {
-  console.log("Client connected")
+  
+  // Add client to connections list
+  const clientConnection: ClientConnection = { socket }
+  clients.push(clientConnection)
 
   socket.on("error", (error) => {
     console.error("WebSocket error:", error)
@@ -37,7 +61,6 @@ wss.on("connection", (socket) => {
   socket.on("message", (message) => {
     try {
       const parsedMessage = JSON.parse(message.toString())
-      console.log("Received message:", parsedMessage.type)
 
       switch (parsedMessage.type) {
         case "create":
@@ -93,24 +116,29 @@ wss.on("connection", (socket) => {
   })
 
   socket.on("close", () => {
-    console.log("Client disconnected")
+    // Remove client from connections list
+    const index = clients.findIndex((c) => c.socket === socket)
+    if (index !== -1) {
+      const client = clients[index]
+      clients.splice(index, 1)
+      
+      // If client was in a session, remove them from attendees
+      if (client.roomId && client.attendee) {
+        const session = findSession(client.roomId)
+        if (session) {
+          session.attendees = session.attendees.filter((a) => a !== client.attendee)
+          // Broadcast attendee left
+          broadcastToRoom(client.roomId, {
+            type: "attendeeLeft",
+            payload: { attendee: client.attendee, attendees: session.attendees },
+          })
+        }
+      }
+    }
   })
 })
 
 console.log("WebSocket server is running on ws://localhost:8080")
-
-// Broadcast to all clients in a room except the sender
-const broadcastToRoom = (roomId: string, message: any, excludeSocket?: WebSocket) => {
-  wss.clients.forEach((client) => {
-    if (client.readyState === WebSocket.OPEN) {
-      // In a real app, you'd track which client is in which room
-      // For simplicity, we'll broadcast to all connected clients
-      if (client !== excludeSocket) {
-        client.send(JSON.stringify(message))
-      }
-    }
-  })
-}
 
 const handleCreateSession = (socket: WebSocket, payload: any) => {
   try {
@@ -134,8 +162,6 @@ const handleCreateSession = (socket: WebSocket, payload: any) => {
         payload: { roomId, sessionName, owner },
       })
     )
-
-    console.log("Session created:", newSession)
   } catch (error) {
     console.error("Error creating session:", error)
     socket.send(
@@ -150,7 +176,7 @@ const handleCreateSession = (socket: WebSocket, payload: any) => {
 const handleJoinSession = (socket: WebSocket, payload: any) => {
   try {
     const { roomId, attendee } = payload
-    const session = sessions.find((s) => s.roomId === roomId)
+    const session = findSession(roomId)
 
     if (!session) {
       socket.send(
@@ -160,6 +186,13 @@ const handleJoinSession = (socket: WebSocket, payload: any) => {
         })
       )
       return
+    }
+
+    // Update client connection info
+    const clientConnection = clients.find((c) => c.socket === socket)
+    if (clientConnection) {
+      clientConnection.roomId = roomId
+      clientConnection.attendee = attendee
     }
 
     if (!session.attendees.includes(attendee)) {
@@ -179,20 +212,11 @@ const handleJoinSession = (socket: WebSocket, payload: any) => {
       })
     )
 
-    // Notify other clients about new attendee
-    broadcastToRoom(
-      roomId,
-      {
-        type: "attendeeJoined",
-        payload: {
-          attendee,
-          attendees: session.attendees,
-        },
-      },
-      socket
-    )
-
-    console.log("Attendee joined:", attendee, "to room:", roomId)
+    // Broadcast to other clients in the room that someone joined
+    broadcastToRoom(roomId, {
+      type: "attendeeJoined",
+      payload: { attendee, attendees: session.attendees },
+    }, socket)
   } catch (error) {
     console.error("Error joining session:", error)
     socket.send(
@@ -207,7 +231,7 @@ const handleJoinSession = (socket: WebSocket, payload: any) => {
 const handleGetSession = (socket: WebSocket, payload: any) => {
   try {
     const { roomId } = payload
-    const session = sessions.find((s) => s.roomId === roomId)
+    const session = findSession(roomId)
 
     if (!session) {
       socket.send(
@@ -244,7 +268,7 @@ const handleGetSession = (socket: WebSocket, payload: any) => {
 const handleQuestion = (socket: WebSocket, payload: any) => {
   try {
     const { roomId, questionText, author } = payload
-    const session = sessions.find((s) => s.roomId === roomId)
+    const session = findSession(roomId)
 
     if (!session) {
       socket.send(
@@ -278,15 +302,11 @@ const handleQuestion = (socket: WebSocket, payload: any) => {
 
     session.questions.push(newQuestion)
 
-    // Notify all clients in the room
+    // Broadcast new question to all clients in the room
     broadcastToRoom(roomId, {
-      type: "questionAdded",
-      payload: {
-        question: newQuestion,
-      },
+      type: "question",
+      payload: newQuestion,
     })
-
-    console.log("Question added:", newQuestion)
   } catch (error) {
     console.error("Error adding question:", error)
     socket.send(
@@ -301,7 +321,7 @@ const handleQuestion = (socket: WebSocket, payload: any) => {
 const handleVote = (socket: WebSocket, payload: any) => {
   try {
     const { roomId, questionText, voteType } = payload
-    const session = sessions.find((s) => s.roomId === roomId)
+    const session = findSession(roomId)
 
     if (!session) {
       socket.send(
@@ -339,15 +359,15 @@ const handleVote = (socket: WebSocket, payload: any) => {
       return
     }
 
-    // Notify all clients in the room about the vote
+    // Broadcast vote update to all clients in the room
     broadcastToRoom(roomId, {
-      type: "voteUpdated",
+      type: "vote",
       payload: {
-        question,
+        questionText,
+        upVotes: question.upVotes,
+        downVotes: question.downVotes,
       },
     })
-
-    console.log("Vote recorded:", voteType, question)
   } catch (error) {
     console.error("Error voting:", error)
     socket.send(
@@ -362,7 +382,7 @@ const handleVote = (socket: WebSocket, payload: any) => {
 const handleMarkQuestion = (socket: WebSocket, payload: any) => {
   try {
     const { roomId, questionText, action } = payload
-    const session = sessions.find((s) => s.roomId === roomId)
+    const session = findSession(roomId)
 
     if (!session) {
       socket.send(
@@ -386,14 +406,20 @@ const handleMarkQuestion = (socket: WebSocket, payload: any) => {
       return
     }
 
+    let updatePayload: any = { questionText }
+
     if (action === "answered") {
       question.answered = true
+      updatePayload.answered = true
     } else if (action === "unanswered") {
       question.answered = false
+      updatePayload.answered = false
     } else if (action === "highlighted") {
       question.highlighted = true
+      updatePayload.highlighted = true
     } else if (action === "unhighlighted") {
       question.highlighted = false
+      updatePayload.highlighted = false
     } else {
       socket.send(
         JSON.stringify({
@@ -404,15 +430,11 @@ const handleMarkQuestion = (socket: WebSocket, payload: any) => {
       return
     }
 
-    // Notify all clients in the room
+    // Broadcast question update to all clients in the room
     broadcastToRoom(roomId, {
-      type: "questionUpdated",
-      payload: {
-        question,
-      },
+      type: "markQuestion",
+      payload: updatePayload,
     })
-
-    console.log("Question updated:", action, question)
   } catch (error) {
     console.error("Error marking question:", error)
     socket.send(
@@ -427,7 +449,7 @@ const handleMarkQuestion = (socket: WebSocket, payload: any) => {
 const handleLeaveSession = (socket: WebSocket, payload: any) => {
   try {
     const { roomId, attendee } = payload
-    const session = sessions.find((s) => s.roomId === roomId)
+    const session = findSession(roomId)
 
     if (!session) {
       socket.send(
@@ -441,20 +463,18 @@ const handleLeaveSession = (socket: WebSocket, payload: any) => {
 
     session.attendees = session.attendees.filter((a) => a !== attendee)
 
-    // Notify other clients in the room
-    broadcastToRoom(
-      roomId,
-      {
-        type: "attendeeLeft",
-        payload: {
-          attendee,
-          attendees: session.attendees,
-        },
-      },
-      socket
-    )
+    // Update client connection info
+    const clientConnection = clients.find((c) => c.socket === socket)
+    if (clientConnection) {
+      clientConnection.roomId = undefined
+      clientConnection.attendee = undefined
+    }
 
-    console.log("Attendee left:", attendee, "from room:", roomId)
+    // Broadcast to other clients in the room
+    broadcastToRoom(roomId, {
+      type: "attendeeLeft",
+      payload: { attendee, attendees: session.attendees },
+    }, socket)
   } catch (error) {
     console.error("Error leaving session:", error)
     socket.send(
@@ -493,17 +513,21 @@ const handleCloseSession = (socket: WebSocket, payload: any) => {
       return
     }
 
-    sessions.splice(sessionIndex, 1)
-
-    // Notify all clients in the room
+    // Broadcast session closure to all clients in the room
     broadcastToRoom(roomId, {
       type: "sessionClosed",
-      payload: {
-        message: "Session has been closed by the presenter",
-      },
+      payload: { roomId },
     })
 
-    console.log("Session closed:", roomId)
+    sessions.splice(sessionIndex, 1)
+
+    // Remove all clients from this room
+    clients.forEach((client) => {
+      if (client.roomId === roomId) {
+        client.roomId = undefined
+        client.attendee = undefined
+      }
+    })
   } catch (error) {
     console.error("Error closing session:", error)
     socket.send(

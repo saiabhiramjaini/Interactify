@@ -1,74 +1,56 @@
-"use client"
+"use client";
 
-import { useState } from "react"
-import Link from "next/link"
-import { useRouter } from "next/navigation"
-import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
-import { ArrowLeft } from "lucide-react"
-import { toast } from "sonner"
+import { useState, useEffect } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { ArrowLeft } from "lucide-react";
+import { toast } from "sonner";
+import { useWebSocket } from "@/context/WebSocketContext";
 
 export default function CreateSession() {
-  const router = useRouter()
-  const [sessionName, setSessionName] = useState("")
-  const [presenterName, setPresenterName] = useState("")
-  const [isCreating, setIsCreating] = useState(false)
+  const router = useRouter();
+  const [sessionName, setSessionName] = useState("");
+  const [presenterName, setPresenterName] = useState("");
+  const [isCreating, setIsCreating] = useState(false);
+  const { sendMessage, lastMessage } = useWebSocket();
+
+  useEffect(() => {
+    if (lastMessage?.type === "sessionCreated") {
+      const { roomId, sessionName, owner } = lastMessage.payload;
+      toast.success("Session created successfully!");
+      // Redirect to the session page or do something with the roomId
+      router.push(
+            `/presenter/session/${roomId}?name=${encodeURIComponent(sessionName)}&presenter=${encodeURIComponent(presenterName)}`
+          )
+    } else if (lastMessage?.type === "error") {
+      toast.error(lastMessage.payload.message);
+      setIsCreating(false);
+    }
+  }, [lastMessage, router]);
 
   const handleCreateSession = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setIsCreating(true)
+    e.preventDefault();
+    setIsCreating(true);
 
-    try {
-      // Connect to WebSocket
-      const ws = new WebSocket('ws://localhost:8080')
-
-      ws.onopen = () => {
-        console.log('Connected to WebSocket server')
-        ws.send(JSON.stringify({
-          type: "create",
-          payload: {
-            sessionName,
-            owner: presenterName
-          }
-        }))
-      }
-
-      ws.onmessage = (event) => {
-        const data = JSON.parse(event.data)
-        console.log('Received message:', data)
-
-        if (data.type === "sessionCreated") {
-          const roomCode = data.payload.roomId
-          toast.success("Session created successfully!")
-          router.push(
-            `/presenter/session/${roomCode}?name=${encodeURIComponent(sessionName)}&presenter=${encodeURIComponent(presenterName)}`
-          )
-          ws.close()
-        } else if (data.type === "error") {
-          toast.error(data.payload.message)
-          setIsCreating(false)
-          ws.close()
-        }
-      }
-
-      ws.onerror = (error) => {
-        console.error('WebSocket error:', error)
-        toast.error("Failed to connect to server")
-        setIsCreating(false)
-      }
-
-      ws.onclose = () => {
-        console.log('WebSocket connection closed')
-      }
-
-    } catch (error) {
-      console.error('Error creating session:', error)
-      toast.error("Failed to create session")
-      setIsCreating(false)
-    }
-  }
+    sendMessage({
+      type: "create",
+      payload: {
+        sessionName,
+        owner: presenterName,
+      },
+    });
+  };
 
   return (
     <div className="container mx-auto flex min-h-screen items-center justify-center px-4 py-8">
@@ -82,7 +64,9 @@ export default function CreateSession() {
             </Link>
             <div>
               <CardTitle>Create a New Session</CardTitle>
-              <CardDescription>Set up a Q&A session for your presentation</CardDescription>
+              <CardDescription>
+                Set up a Q&A session for your presentation
+              </CardDescription>
             </div>
           </div>
         </CardHeader>
@@ -110,9 +94,9 @@ export default function CreateSession() {
             </div>
           </CardContent>
           <CardFooter className="mt-5">
-            <Button 
-              type="submit" 
-              className="w-full" 
+            <Button
+              type="submit"
+              className="w-full"
               disabled={!sessionName || !presenterName || isCreating}
             >
               {isCreating ? "Creating..." : "Create Session"}
@@ -121,5 +105,5 @@ export default function CreateSession() {
         </form>
       </Card>
     </div>
-  )
+  );
 }

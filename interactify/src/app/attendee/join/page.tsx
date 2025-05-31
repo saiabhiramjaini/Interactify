@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { ArrowLeft } from "lucide-react"
 import { toast } from "sonner"
+import { useWebSocket } from "@/context/WebSocketContext"
 
 export default function JoinSession() {
   const router = useRouter()
@@ -16,6 +17,7 @@ export default function JoinSession() {
   const [roomCode, setRoomCode] = useState("")
   const [attendeeName, setAttendeeName] = useState("")
   const [isJoining, setIsJoining] = useState(false)
+  const { sendMessage, lastMessage } = useWebSocket()
 
   useEffect(() => {
     const codeFromUrl = searchParams.get("code")
@@ -24,47 +26,43 @@ export default function JoinSession() {
     }
   }, [searchParams])
 
-  const handleJoinSession = (e: React.FormEvent) => {
-    e.preventDefault()
-    setIsJoining(true)
+  useEffect(() => {
+    if (!lastMessage) return
 
-    const ws = new WebSocket('ws://localhost:8080')
-
-    ws.onopen = () => {
-      console.log('WebSocket connection opened')
-      ws.send(JSON.stringify({
-        type: "join",
-        payload: {
-          roomId: roomCode,
-          attendee: attendeeName
-        }
-      }))
-    }
-
-    ws.onmessage = (event) => {
-      const data = JSON.parse(event.data)
-      console.log('Received message:', data)
-
-      if (data.type === "sessionJoined") {
+    switch (lastMessage.type) {
+      case "sessionJoined":
+        // Successfully joined the session
         toast.success("Successfully joined the session!")
         router.push(`/attendee/session/${roomCode}?name=${encodeURIComponent(attendeeName)}`)
-        ws.close()
-      } else if (data.type === "error") {
-        toast.error(data.payload.message)
+        break
+        
+      case "error":
+        // Handle errors from the server
+        toast.error(lastMessage.payload.message)
         setIsJoining(false)
-        ws.close()
+        break
+    }
+  }, [lastMessage, router, roomCode, attendeeName])
+
+  const handleJoinSession = (e: React.FormEvent) => {
+    e.preventDefault()
+    
+    // Validate inputs
+    if (!roomCode || !attendeeName) {
+      toast.error("Please enter both room code and your name")
+      return
+    }
+
+    setIsJoining(true)
+
+    // Send join message to WebSocket server
+    sendMessage({
+      type: "join",
+      payload: {
+        roomId: roomCode,
+        attendee: attendeeName
       }
-    }
-
-    ws.onerror = (error) => {
-      console.error('WebSocket error:', error)
-      toast.error("Failed to connect to the session")
-      setIsJoining(false)
-    }
-
-    ws.onclose = () => {
-      console.log('WebSocket connection closed')
-    }
+    })
   }
 
   return (
