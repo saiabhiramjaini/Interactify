@@ -1,5 +1,6 @@
 import { WebSocketServer } from "ws";
 import { websocketService } from './services/websocketService'
+import { pubSubService } from './redis/pubSubService' // NEW IMPORT
 import {
   handleCreateSession,
   handleJoinSession,
@@ -13,6 +14,9 @@ import {
 
 export const createWebSocketServer = () => {
   const wss = new WebSocketServer({ noServer: true });
+
+  // Initialize Redis subscriber when server starts
+  pubSubService.initializeSubscriber(); // NEW LINE
 
   wss.on("connection", (socket) => {
     websocketService.addClient(socket)
@@ -81,6 +85,13 @@ export const createWebSocketServer = () => {
         }
       }
     })
+  })
+
+  // Graceful shutdown
+  process.on('SIGTERM', () => {
+    console.log('Shutting down...')
+    pubSubService.disconnect()
+    wss.close()
   })
 
   return wss

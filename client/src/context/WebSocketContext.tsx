@@ -43,7 +43,8 @@ export const WebSocketProvider = ({ children }: { children: ReactNode }) => {
     cleanup()
 
     try {
-      ws.current = new WebSocket('ws://localhost:8080')
+      const wsUrl = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8080'
+      ws.current = new WebSocket(wsUrl)
 
       ws.current.onopen = () => {
         if (!isMounted.current) return

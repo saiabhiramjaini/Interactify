@@ -43,7 +43,9 @@ class WebSocketService {
     })
   }
 
-  broadcastToRoom(roomId: string, message: any, excludeSocket?: WebSocket): void {
+  // UPDATED: Added skipRedis parameter to avoid infinite loops
+  broadcastToRoom(roomId: string, message: any, excludeSocket?: WebSocket, skipRedis: boolean = false): void {
+    // Send to local clients
     this.clients.forEach((client) => {
       if (
         client.roomId === roomId &&
@@ -53,6 +55,13 @@ class WebSocketService {
         client.socket.send(JSON.stringify(message))
       }
     })
+
+    // If this is not from Redis (skipRedis = false), also publish to Redis
+    // so other servers can send to their clients
+    if (!skipRedis) {
+      const { pubSubService } = require('../redis/pubSubService')
+      pubSubService.publishToRoom(roomId, message)
+    }
   }
 
   sendToClient(socket: WebSocket, message: any): void {

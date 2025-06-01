@@ -28,19 +28,25 @@ app.use((req, res, next) => {
   next()
 })
 
+// Get port from environment variable or default to 8080
+const PORT = process.env.PORT || 8080
+const SERVER_ID = process.env.SERVER_ID || 'server-1'
+
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.status(200).json({ 
     status: 'healthy',
-    websocket: 'ws://localhost:8080' 
+    websocket: `ws://localhost:${PORT}`,
+    serverId: SERVER_ID,
+    port: PORT
   })
 })
 
 connectDB();
 
 // Start the server
-const PORT = 8080 // Changed to match your screenshot
 server.listen(PORT, () => {
+  console.log(`🚀 Server ${SERVER_ID} starting...`)
   console.log(`HTTP server is running on http://localhost:${PORT}`)
   console.log(`WebSocket server is running on ws://localhost:${PORT}`)
   
