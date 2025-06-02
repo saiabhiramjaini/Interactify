@@ -2,6 +2,7 @@ import express from 'express'
 import http from 'http'
 import { createWebSocketServer } from './wsServer'
 import connectDB from './db/connect'
+import { kafkaProducer, kafkaConsumer, initializeKafka } from './kafka/index'
 
 const app = express()
 const server = http.createServer(app)
@@ -42,7 +43,33 @@ app.get('/health', (req, res) => {
   })
 })
 
-connectDB();
+// Initialize services
+async function initializeServices() {
+  try {
+    // Connect to MongoDB
+    await connectDB();
+    console.log('MongoDB connected successfully');
+    
+    // Initialize Kafka
+    await initializeKafka();
+    console.log('Kafka initialized successfully');
+    
+    // Connect Kafka producer and consumer
+    if (!kafkaProducer || !kafkaConsumer) {
+      throw new Error('Kafka producer or consumer not properly initialized');
+    }
+    
+    await kafkaProducer.connect();
+    await kafkaConsumer.connect();
+    await kafkaConsumer.start();
+    console.log('Kafka producer and consumer connected successfully');
+    
+    console.log('All services initialized successfully');
+  } catch (error) {
+    console.error('Error initializing services:', error);
+    process.exit(1);
+  }
+}
 
 // Start the server
 server.listen(PORT, () => {
@@ -54,4 +81,14 @@ server.listen(PORT, () => {
   server.on('error', (error) => {
     console.error('Server error:', error)
   })
+  
+  initializeServices();
 })
+
+// Handle graceful shutdown
+process.on('SIGTERM', async () => {
+  console.log('SIGTERM received. Shutting down gracefully...');
+  if (kafkaProducer) await kafkaProducer.disconnect();
+  if (kafkaConsumer) await kafkaConsumer.disconnect();
+  process.exit(0);
+});

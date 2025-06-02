@@ -1,6 +1,7 @@
 import { SessionModel } from '../db/models/sessionModel';
 import { Session, Question, Attendee } from '../types';
 import { generateRoomId } from '../utils/generateRoomId';
+import { kafkaProducer } from '../kafka/producer';
 
 class SessionService {
   private transformSession(doc: any): Session {
@@ -35,16 +36,21 @@ class SessionService {
   async createSession(sessionName: string, owner: string): Promise<Session> {
     const roomId = generateRoomId();
     
-    const newSession = new SessionModel({
+    const newSession = {
       sessionName,
       roomId,
       owner,
       attendees: [],
       questions: []
+    };
+
+    await kafkaProducer.sendDbOperation({
+      type: 'create',
+      collection: 'sessions',
+      data: newSession
     });
 
-    const savedSession = await newSession.save();
-    return this.transformSession(savedSession);
+    return this.transformSession(newSession);
   }
 
   async findSession(roomId: string): Promise<Session | null> {
@@ -55,38 +61,45 @@ class SessionService {
   async joinSession(roomId: string, attendee: Attendee): Promise<Session | null> {
     const session = await SessionModel.findOne({ roomId });
     if (!session) return null;
-    // Do not add owner as attendee
+    
     if (attendee.id === session.owner) {
       return this.transformSession(session);
     }
-    // Use $addToSet to deduplicate attendees
-    await SessionModel.updateOne(
-      { roomId },
-      { $addToSet: { attendees: { id: attendee.id, name: attendee.name } } }
-    );
+
+    await kafkaProducer.sendDbOperation({
+      type: 'update',
+      collection: 'sessions',
+      query: { roomId },
+      data: { $addToSet: { attendees: { id: attendee.id, name: attendee.name } } }
+    });
+
     const updatedSession = await SessionModel.findOne({ roomId });
-    return this.transformSession(updatedSession);
+    return updatedSession ? this.transformSession(updatedSession) : null;
   }
 
   async leaveSession(roomId: string, attendeeId: string): Promise<Session | null> {
     const session = await SessionModel.findOne({ roomId });
     if (!session) return null;
 
-    session.attendees.pull({ id: attendeeId });
-    const updatedSession = await session.save();
-    return this.transformSession(updatedSession);
+    await kafkaProducer.sendDbOperation({
+      type: 'update',
+      collection: 'sessions',
+      query: { roomId },
+      data: { $pull: { attendees: { id: attendeeId } } }
+    });
+
+    const updatedSession = await SessionModel.findOne({ roomId });
+    return updatedSession ? this.transformSession(updatedSession) : null;
   }
 
   async addQuestion(roomId: string, questionText: string, authorId: string, authorName: string): Promise<{ question: Question; session: Session } | null> {
     const session = await SessionModel.findOne({ roomId });
     if (!session) return null;
 
-    // Prevent duplicate questions (case-insensitive, trimmed)
     const normalizedText = questionText.trim().toLowerCase();
     const duplicate = session.questions.some(q => q.questionText.trim().toLowerCase() === normalizedText);
     if (duplicate) return null;
 
-    // Verify author is an attendee by id
     const isAttendee = session.attendees.some(a => a.id === authorId);
     if (!isAttendee) return null;
 
@@ -100,10 +113,32 @@ class SessionService {
       highlighted: false
     };
 
-    session.questions.push(newQuestion);
-    const updatedSession = await session.save();
-    // Get the newly added question (last one in array)
-    const addedQuestion = updatedSession.questions[updatedSession.questions.length - 1];
+    // Send to Kafka
+    await kafkaProducer.sendDbOperation({
+      type: 'update',
+      collection: 'sessions',
+      query: { roomId },
+      data: { $push: { questions: newQuestion } }
+    });
+
+    // Wait a bit for Kafka to process the message
+    await new Promise(resolve => setTimeout(resolve, 100));
+
+    // Fetch the updated session
+    const updatedSession = await SessionModel.findOne({ roomId });
+    if (!updatedSession) return null;
+
+    // Find the newly added question
+    const addedQuestion = updatedSession.questions.find(q => 
+      q.questionText === questionText && 
+      q.authorId === authorId
+    );
+
+    if (!addedQuestion) {
+      console.error('Question was not found after Kafka processing');
+      return null;
+    }
+
     return {
       question: this.transformQuestion(addedQuestion),
       session: this.transformSession(updatedSession)
@@ -126,17 +161,46 @@ class SessionService {
     
     if (hasVoted) {
       // Remove vote (toggle off)
-      question.upVotedBy = question.upVotedBy.filter(id => id !== voterId);
-      question.upVotes = Math.max(0, question.upVotes - 1);
+      await kafkaProducer.sendDbOperation({
+        type: 'update',
+        collection: 'sessions',
+        query: { 
+          roomId,
+          'questions._id': questionId 
+        },
+        data: {
+          $pull: { 'questions.$.upVotedBy': voterId },
+          $inc: { 'questions.$.upVotes': -1 }
+        }
+      });
     } else {
       // Add vote
-      question.upVotedBy.push(voterId);
-      question.upVotes += 1;
+      await kafkaProducer.sendDbOperation({
+        type: 'update',
+        collection: 'sessions',
+        query: { 
+          roomId,
+          'questions._id': questionId 
+        },
+        data: {
+          $addToSet: { 'questions.$.upVotedBy': voterId },
+          $inc: { 'questions.$.upVotes': 1 }
+        }
+      });
     }
 
-    const updatedSession = await session.save();
+    // Wait a bit for Kafka to process the message
+    await new Promise(resolve => setTimeout(resolve, 100));
+
+    // Fetch the updated session
+    const updatedSession = await SessionModel.findOne({ roomId });
+    if (!updatedSession) return null;
+
+    const updatedQuestion = updatedSession.questions.id(questionId);
+    if (!updatedQuestion) return null;
+
     return {
-      question: this.transformQuestion(question),
+      question: this.transformQuestion(updatedQuestion),
       session: this.transformSession(updatedSession)
     };
   }
@@ -151,26 +215,46 @@ class SessionService {
     const question = session.questions.id(questionId);
     if (!question) return null;
 
+    let updateData: any = {};
     switch (action) {
       case 'answered':
-        question.answered = true;
+        updateData = { 'questions.$.answered': true };
         break;
       case 'unanswered':
-        question.answered = false;
+        updateData = { 'questions.$.answered': false };
         break;
       case 'highlighted':
-        question.highlighted = true;
+        updateData = { 'questions.$.highlighted': true };
         break;
       case 'unhighlighted':
-        question.highlighted = false;
+        updateData = { 'questions.$.highlighted': false };
         break;
       default:
         return null;
     }
 
-    const updatedSession = await session.save();
+    await kafkaProducer.sendDbOperation({
+      type: 'update',
+      collection: 'sessions',
+      query: { 
+        roomId,
+        'questions._id': questionId 
+      },
+      data: { $set: updateData }
+    });
+
+    // Wait a bit for Kafka to process the message
+    await new Promise(resolve => setTimeout(resolve, 100));
+
+    // Fetch the updated session
+    const updatedSession = await SessionModel.findOne({ roomId });
+    if (!updatedSession) return null;
+
+    const updatedQuestion = updatedSession.questions.id(questionId);
+    if (!updatedQuestion) return null;
+
     return {
-      question: this.transformQuestion(question),
+      question: this.transformQuestion(updatedQuestion),
       session: this.transformSession(updatedSession)
     };
   }
@@ -182,8 +266,13 @@ class SessionService {
     // Only owner can close session
     if (session.owner !== ownerId) return false;
 
-    session.sessionStatus = 'closed';
-    await session.save();
+    await kafkaProducer.sendDbOperation({
+      type: 'update',
+      collection: 'sessions',
+      query: { roomId },
+      data: { $set: { sessionStatus: 'closed' } }
+    });
+
     return true;
   }
 
