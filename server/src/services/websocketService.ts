@@ -1,5 +1,5 @@
 import { WebSocket } from "ws"
-import { ClientConnection } from '../types'
+import { ClientConnection, Attendee } from '../types'
 
 class WebSocketService {
   private clients: ClientConnection[] = []
@@ -18,7 +18,7 @@ class WebSocketService {
     return client
   }
 
-  updateClientRoom(socket: WebSocket, roomId: string, attendee: string): void {
+  updateClientRoom(socket: WebSocket, roomId: string, attendee: Attendee): void {
     const client = this.clients.find((c) => c.socket === socket)
     if (client) {
       client.roomId = roomId
@@ -72,6 +72,10 @@ class WebSocketService {
 
   getClients(): ClientConnection[] {
     return this.clients
+  }
+
+  getClientBySocket(socket: WebSocket): ClientConnection | undefined {
+    return this.clients.find((c) => c.socket === socket)
   }
 }
 

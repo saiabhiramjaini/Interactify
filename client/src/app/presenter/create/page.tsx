@@ -27,12 +27,12 @@ export default function CreateSession() {
 
   useEffect(() => {
     if (lastMessage?.type === "sessionCreated") {
-      const { roomId, sessionName, owner } = lastMessage.payload;
+      const { session } = lastMessage.payload;
       toast.success("Session created successfully!");
-      // Redirect to the session page or do something with the roomId
+      // Redirect to the session page with the roomId from the session
       router.push(
-            `/presenter/session/${roomId}?name=${encodeURIComponent(sessionName)}&presenter=${encodeURIComponent(presenterName)}`
-          )
+        `/presenter/session/${session.roomId}?name=${encodeURIComponent(session.sessionName)}&presenter=${encodeURIComponent(session.owner)}`
+      );
     } else if (lastMessage?.type === "error") {
       toast.error(lastMessage.payload.message);
       setIsCreating(false);

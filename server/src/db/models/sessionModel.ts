@@ -1,6 +1,45 @@
 import { Schema, model } from "mongoose";
 
-// Main Session schema with embedded questions
+const QuestionSchema = new Schema(
+  {
+    questionText: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    upVotes: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    upVotedBy: [
+      {
+        type: String,
+        trim: true,
+      },
+    ],
+    authorId: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    authorName: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    answered: {
+      type: Boolean,
+      default: false,
+    },
+    highlighted: {
+      type: Boolean,
+      default: false,
+    },
+  },
+  { _id: true, timestamps: true }
+);
+
 const SessionSchema = new Schema(
   {
     sessionName: {
@@ -22,66 +61,23 @@ const SessionSchema = new Schema(
     },
     attendees: [
       {
-        type: String,
-        trim: true,
+        id: { type: String, required: true },
+        name: { type: String, required: true, trim: true },
+        _id: false
       },
     ],
-    questions: [
-      {
-        questionText: {
-          type: String,
-          required: true,
-          trim: true,
-        },
-        upVotes: {
-          type: Number,
-          default: 0,
-          min: 0,
-        },
-        downVotes: {
-          type: Number,
-          default: 0,
-          min: 0,
-        },
-        author: {
-          type: String,
-          required: true,
-          trim: true,
-        },
-        createdAt: {
-          type: Date,
-          default: Date.now,
-        },
-        answered: {
-          type: Boolean,
-          default: false,
-        },
-        highlighted: {
-          type: Boolean,
-          default: false,
-        },
-      },
-    ],
-    createdAt: {
-      type: Date,
-      default: Date.now,
+    questions: [QuestionSchema],
+    sessionStatus: {
+      type: String,
+      enum: ["active", "closed"],
+      default: "active",
     },
   },
   {
-    // Add createdAt and updatedAt timestamps
     timestamps: true,
   }
 );
 
-// Indexes for better query performance
-SessionSchema.index({ roomId: 1 });
-SessionSchema.index({ owner: 1 });
-SessionSchema.index({ createdAt: -1 });
-SessionSchema.index({ "questions.author": 1 });
-SessionSchema.index({ "questions.answered": 1 });
-SessionSchema.index({ "questions.highlighted": 1 });
-
-// Create and export the model
 const SessionModel = model("Session", SessionSchema);
 
 export { SessionModel };

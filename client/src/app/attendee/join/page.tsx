@@ -10,6 +10,8 @@ import { Label } from "@/components/ui/label"
 import { ArrowLeft } from "lucide-react"
 import { toast } from "sonner"
 import { useWebSocket } from "@/context/WebSocketContext"
+import { generateAttendeeId } from "@/utils/generateAttendeeId"
+import { randomName } from "@/utils/generateAttendeeName"
 
 export default function JoinSession() {
   const router = useRouter()
@@ -17,6 +19,7 @@ export default function JoinSession() {
   const [roomCode, setRoomCode] = useState("")
   const [attendeeName, setAttendeeName] = useState("")
   const [isJoining, setIsJoining] = useState(false)
+  const [attendeeId, setAttendeeId] = useState("")
   const { sendMessage, lastMessage } = useWebSocket()
 
   useEffect(() => {
@@ -24,6 +27,8 @@ export default function JoinSession() {
     if (codeFromUrl) {
       setRoomCode(codeFromUrl)
     }
+    setAttendeeName(randomName)
+    setAttendeeId(generateAttendeeId())
   }, [searchParams])
 
   useEffect(() => {
@@ -33,7 +38,7 @@ export default function JoinSession() {
       case "sessionJoined":
         // Successfully joined the session
         toast.success("Successfully joined the session!")
-        router.push(`/attendee/session/${roomCode}?name=${encodeURIComponent(attendeeName)}`)
+        router.push(`/attendee/session/${roomCode}?name=${encodeURIComponent(attendeeName)}&id=${attendeeId}`)
         break
         
       case "error":
@@ -42,7 +47,7 @@ export default function JoinSession() {
         setIsJoining(false)
         break
     }
-  }, [lastMessage, router, roomCode, attendeeName])
+  }, [lastMessage, router, roomCode, attendeeName, attendeeId])
 
   const handleJoinSession = (e: React.FormEvent) => {
     e.preventDefault()
@@ -60,7 +65,10 @@ export default function JoinSession() {
       type: "join",
       payload: {
         roomId: roomCode,
-        attendee: attendeeName
+        attendee: {
+          id: attendeeId,
+          name: attendeeName || randomName
+        }
       }
     })
   }

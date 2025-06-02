@@ -28,16 +28,27 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { useWebSocket } from "@/context/WebSocketContext";
+import { generateAttendeeId } from "@/utils/generateAttendeeId";
 
 interface Question {
+  _id: string;
   questionText: string;
   upVotes: number;
   downVotes: number;
-  author: string;
+  authorId: string;
+  authorName: string;
   createdAt: string;
   answered: boolean;
   highlighted: boolean;
+  upVotedBy: string[];
 }
+
+type SessionDataPayload = {
+  questions?: Question[];
+  attendees?: { id: string; name: string }[];
+  sessionName?: string;
+  owner?: string;
+};
 
 export default function AttendeeSession() {
   const params = useParams();
@@ -46,6 +57,7 @@ export default function AttendeeSession() {
   const router = useRouter();
 
   const roomCode = params.roomCode as string;
+  const attendeeId = searchParams.get("id");
   const attendeeName = searchParams.get("name") || "Anonymous";
 
   const [questions, setQuestions] = useState<Question[]>([]);
@@ -60,6 +72,7 @@ const [initialized, setInitialized] = useState(false);
   // Use refs to track if we've already initialized
   const hasInitialized = useRef(false);
   const lastProcessedMessage = useRef<any>(null);
+  const hasJoined = useRef(false);
 
 
   // Memoize the message handler to prevent recreating it on each render
@@ -73,30 +86,27 @@ const [initialized, setInitialized] = useState(false);
 
       switch (message.type) {
         case "sessionJoined":
-          toast.success("Successfully joined the session!");
+          if (!hasJoined.current) {
+            toast.success("Successfully joined the session!");
+            hasJoined.current = true;
+          }
           break;
 
         case "sessionData":
-          // Use functional updates to avoid stale closures
-          setSessionName(message.payload.sessionName || "Session");
-          setPresenterName(message.payload.owner || "Presenter");
-          setAttendeeCount(message.payload.attendees?.length || 0);
-
-          setQuestions((prev) => {
-            const newQuestions = message.payload.questions || [];
-            // Only update if the data actually changed
-            if (JSON.stringify(prev) !== JSON.stringify(newQuestions)) {
-              return newQuestions;
-            }
-            return prev;
-          });
+          const session = message.payload.session;
+          setSessionName(session.sessionName || "Session");
+          setPresenterName(session.owner || "Presenter");
+          setAttendeeCount(session.attendees?.length || 0);
+          setQuestions(session.questions || []);
           break;
 
         case "attendeeJoined":
           setAttendeeCount((prev) => {
+            const attendee = message.payload.attendee;
+            const attendeeName = attendee.name || attendee.id || attendee;
             const newCount = message.payload.attendees?.length || prev + 1;
-            if (message.payload.attendee !== attendeeName) {
-              toast(`${message.payload.attendee} joined the session`);
+            if (attendeeName !== attendeeName) {
+              toast(`${attendeeName} joined the session`);
             }
             return newCount;
           });
@@ -104,28 +114,31 @@ const [initialized, setInitialized] = useState(false);
 
         case "attendeeLeft":
           setAttendeeCount((prev) => {
+            const attendee = message.payload.attendee;
+            const attendeeName = attendee.name || attendee.id || attendee;
             const newCount =
               message.payload.attendees?.length || Math.max(0, prev - 1);
-            if (message.payload.attendee !== attendeeName) {
-              toast(`${message.payload.attendee} left the session`);
+            if (attendeeName !== attendeeName) {
+              toast(`${attendeeName} left the session`);
             }
             return newCount;
           });
           break;
 
         case "question":
+        case "questionAdded":
           setQuestions((prev) => {
-            const newQuestion = message.payload;
+            const newQuestion = message.payload.question || message.payload;
             // Check if question already exists
             const exists = prev.some(
               (q) =>
                 q.questionText === newQuestion.questionText &&
-                q.author === newQuestion.author
+                q.authorId === newQuestion.authorId
             );
 
             if (!exists) {
-              if (newQuestion.author !== attendeeName) {
-                toast(`New question from ${newQuestion.author}`);
+              if (newQuestion.authorId !== attendeeId) {
+                toast(`New question from ${newQuestion.authorName}`);
               }
               return [...prev, newQuestion];
             }
@@ -193,6 +206,16 @@ const [initialized, setInitialized] = useState(false);
           toast.error(message.payload.message);
           break;
 
+        case "questionUpdated":
+          setQuestions((prev) =>
+            prev.map((q) =>
+              q.questionText === (message.payload.question.questionText)
+                ? { ...q, ...message.payload.question }
+                : q
+            )
+          );
+          break;
+
         default:
           console.log("Unhandled message type:", message.type);
       }
@@ -215,22 +238,32 @@ const [initialized, setInitialized] = useState(false);
     if (!hasInitialized.current && roomCode && attendeeName) {
       hasInitialized.current = true;
 
+      const attendeeId = searchParams.get("id");
+      if (!attendeeId) {
+        toast.error("Invalid session ID");
+        router.push("/");
+        return;
+      }
+
       // Join the session as attendee
       sendMessage({
         type: "join",
         payload: {
           roomId: roomCode,
-          attendee: attendeeName,
-        },
+          attendee: {
+            id: attendeeId,
+            name: attendeeName
+          }
+        }
       });
 
       // Get initial session data
       sendMessage({
         type: "getSession",
-        payload: { roomId: roomCode },
+        payload: { roomId: roomCode }
       });
     }
-  }, [roomCode, attendeeName, sendMessage]);
+  }, [roomCode, attendeeName, sendMessage, searchParams, router]);
 
   // Handle incoming messages
   useEffect(() => {
@@ -242,32 +275,40 @@ const [initialized, setInitialized] = useState(false);
   const sortedQuestions = [...questions].sort((a, b) => {
     if (a.answered !== b.answered) return a.answered ? 1 : -1;
     if (a.highlighted !== b.highlighted) return a.highlighted ? -1 : 1;
-    return b.upVotes - b.downVotes - (a.upVotes - a.downVotes);
+    return ((b.upVotes || 0) - (b.downVotes || 0)) - ((a.upVotes || 0) - (a.downVotes || 0));
   });
 
   const handleSubmitQuestion = useCallback(
     (e: React.FormEvent) => {
       e.preventDefault();
-      if (!newQuestion.trim()) return;
+      if (!newQuestion.trim() || !attendeeId) return;
 
       sendMessage({
         type: "question",
         payload: {
           roomId: roomCode,
           questionText: newQuestion.trim(),
-          author: attendeeName,
+          authorId: attendeeId,
+          authorName: attendeeName,
         },
       });
 
       setNewQuestion("");
       toast("Question submitted!");
     },
-    [newQuestion, roomCode, attendeeName, sendMessage]
+    [newQuestion, roomCode, attendeeId, attendeeName, sendMessage]
   );
 
   const handleVote = useCallback(
-    (questionText: string) => {
-      const isAlreadyVoted = votedQuestions.has(questionText);
+    (questionId: string) => {
+      const isAlreadyVoted = votedQuestions.has(questionId);
+      const attendeeId = searchParams.get("id");
+
+      if (!attendeeId) {
+        toast.error("Invalid session ID");
+        router.push("/");
+        return;
+      }
 
       if (isAlreadyVoted) {
         toast("You have already voted on this question");
@@ -278,27 +319,70 @@ const [initialized, setInitialized] = useState(false);
         type: "vote",
         payload: {
           roomId: roomCode,
-          questionText,
-          voteType: "upVote",
+          questionId: questionId,
+          voterId: attendeeId,
         },
       });
 
-      setVotedQuestions((prev) => new Set([...prev, questionText]));
+      setVotedQuestions((prev) => new Set([...prev, questionId]));
       toast("Vote recorded!");
     },
-    [roomCode, sendMessage, votedQuestions]
+    [roomCode, sendMessage, votedQuestions, searchParams, router]
   );
 
   const handleLeaveSession = useCallback(() => {
+    const attendeeId = searchParams.get("id");
+    if (!attendeeId) {
+      toast.error("Invalid session ID");
+      router.push("/");
+      return;
+    }
+
     sendMessage({
       type: "leave",
       payload: {
         roomId: roomCode,
-        attendee: attendeeName,
+        attendeeId: attendeeId,
       },
     });
     router.push("/");
-  }, [roomCode, attendeeName, sendMessage, router]);
+  }, [roomCode, sendMessage, router, searchParams]);
+
+  useEffect(() => {
+    if (lastMessage?.type === "sessionJoined") {
+      sendMessage({
+        type: "getSession",
+        payload: { roomId: roomCode },
+      });
+    }
+  }, [lastMessage, roomCode, sendMessage]);
+
+  // Always join and fetch session data on page load/refresh
+  useEffect(() => {
+    if (roomCode && attendeeName) {
+      const attendeeId = searchParams.get("id");
+      if (!attendeeId) {
+        toast.error("Invalid session ID");
+        router.push("/");
+        return;
+      }
+
+      sendMessage({
+        type: "join",
+        payload: {
+          roomId: roomCode,
+          attendee: {
+            id: attendeeId,
+            name: attendeeName
+          }
+        }
+      });
+      sendMessage({
+        type: "getSession",
+        payload: { roomId: roomCode }
+      });
+    }
+  }, [roomCode, attendeeName, sendMessage, searchParams, router]);
 
   return (
     <div className="container mx-auto px-4 py-8">
@@ -379,7 +463,7 @@ const [initialized, setInitialized] = useState(false);
             <div className="space-y-4">
               {sortedQuestions.map((question, index) => (
                 <Card
-                  key={`${question.questionText}-${question.author}-${index}`}
+                  key={question._id}
                   className={`transition-all ${
                     question.highlighted
                       ? "border-2 border-yellow-400 shadow-lg"
@@ -392,27 +476,16 @@ const [initialized, setInitialized] = useState(false);
                     <div className="flex gap-4">
                       <div className="flex flex-col items-center">
                         <Button
-                          variant={
-                            votedQuestions.has(question.questionText)
-                              ? "default"
-                              : "outline"
-                          }
+                          variant={question.upVotedBy.includes(attendeeName) ? "default" : "outline"}
                           size="icon"
-                          className={`h-10 w-10 rounded-full ${
-                            votedQuestions.has(question.questionText)
-                              ? "bg-blue-500 text-white hover:bg-blue-600"
-                              : ""
-                          }`}
-                          onClick={() => handleVote(question.questionText)}
-                          disabled={
-                            question.answered ||
-                            votedQuestions.has(question.questionText)
-                          }
+                          className={`h-10 w-10 rounded-full ${question.upVotedBy.includes(attendeeName) ? "bg-blue-500 text-white hover:bg-blue-600" : ""}`}
+                          onClick={() => handleVote(question._id)}
+                          disabled={question.answered}
                         >
                           <ThumbsUp className="h-4 w-4" />
                         </Button>
                         <span className="mt-1 text-sm font-medium">
-                          {question.upVotes - question.downVotes}
+                          {(question.upVotes || 0) - (question.downVotes || 0)}
                         </span>
                       </div>
 
@@ -435,7 +508,7 @@ const [initialized, setInitialized] = useState(false);
                             </div>
                             <div className="mt-1 flex items-center text-xs text-gray-500">
                               <span className="font-medium">
-                                {question.author}
+                                {question.authorName}
                               </span>
                               <span className="mx-1">•</span>
                               <span>

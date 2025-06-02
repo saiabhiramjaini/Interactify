@@ -32,6 +32,7 @@ import { toast } from "sonner";
 import { useWebSocket } from "@/context/WebSocketContext";
 
 interface Question {
+  _id: string;
   questionText: string;
   upVotes: number;
   downVotes: number;
@@ -40,6 +41,13 @@ interface Question {
   answered: boolean;
   highlighted: boolean;
 }
+
+type SessionDataPayload = {
+  questions?: Question[];
+  attendees?: { id: string; name: string }[];
+  sessionName?: string;
+  owner?: string;
+};
 
 export default function PresenterSession() {
   const params = useParams();
@@ -77,31 +85,18 @@ export default function PresenterSession() {
         break;
 
       case "sessionData":
-        // Use functional updates to avoid stale closures
-        setQuestions((prev) => {
-          const newQuestions = message.payload.questions || [];
-          // Only update if the data actually changed
-          if (JSON.stringify(prev) !== JSON.stringify(newQuestions)) {
-            return newQuestions;
-          }
-          return prev;
-        });
-
-        setAttendees((prev) => {
-          const newAttendees = message.payload.attendees || [];
-          if (JSON.stringify(prev) !== JSON.stringify(newAttendees)) {
-            return newAttendees;
-          }
-          return prev;
-        });
+        const session = message.payload.session;
+        setQuestions(session.questions || []);
+        setAttendees((session.attendees || []).map((a: any) => a.name || a.id));
         break;
 
       case "attendeeJoined":
         setAttendees((prev) => {
           const attendee = message.payload.attendee;
-          if (!prev.includes(attendee)) {
-            toast(`${attendee} joined the session`);
-            return [...prev, attendee];
+          const attendeeName = attendee.name || attendee.id || attendee;
+          if (!prev.includes(attendeeName)) {
+            toast(`${attendeeName} joined the session`);
+            return [...prev, attendeeName];
           }
           return prev;
         });
@@ -110,9 +105,10 @@ export default function PresenterSession() {
       case "attendeeLeft":
         setAttendees((prev) => {
           const attendee = message.payload.attendee;
-          const newAttendees = prev.filter((a) => a !== attendee);
+          const attendeeName = attendee.name || attendee.id || attendee;
+          const newAttendees = prev.filter((a) => a !== attendeeName);
           if (newAttendees.length !== prev.length) {
-            toast(`${attendee} left the session`);
+            toast(`${attendeeName} left the session`);
             return newAttendees;
           }
           return prev;
@@ -120,8 +116,9 @@ export default function PresenterSession() {
         break;
 
       case "question":
+      case "questionAdded":
         setQuestions((prev) => {
-          const newQuestion = message.payload;
+          const newQuestion = message.payload.question || message.payload;
           // Check if question already exists
           const exists = prev.some(
             (q) =>
@@ -161,7 +158,7 @@ export default function PresenterSession() {
       case "markQuestion":
         setQuestions((prev) =>
           prev.map((q) => {
-            if (q.questionText === message.payload.questionText) {
+            if (q._id === message.payload.questionId) {
               const updates: Partial<Question> = {};
 
               if (message.payload.answered !== undefined) {
@@ -196,6 +193,16 @@ export default function PresenterSession() {
         toast.error(message.payload.message);
         break;
 
+      case "questionUpdated":
+        setQuestions((prev) =>
+          prev.map((q) =>
+            q.questionText === (message.payload.question.questionText)
+              ? { ...q, ...message.payload.question }
+              : q
+          )
+        );
+        break;
+
       default:
         console.log("Unhandled message type:", message.type);
     }
@@ -207,45 +214,43 @@ export default function PresenterSession() {
   }, [roomCode]);
 
   const toggleAnswered = useCallback(
-    (questionText: string) => {
+    (questionId: string) => {
       setQuestions((prev) => {
-        const question = prev.find((q) => q.questionText === questionText);
+        const question = prev.find((q) => q._id === questionId);
         if (!question) return prev;
-
         sendMessage({
           type: "markQuestion",
           payload: {
             roomId: roomCode,
-            questionText,
+            questionId: questionId,
             action: question.answered ? "unanswered" : "answered",
+            userId: presenterName,
           },
         });
-
         return prev;
       });
     },
-    [roomCode, sendMessage]
+    [roomCode, presenterName, sendMessage]
   );
 
   const toggleHighlighted = useCallback(
-    (questionText: string) => {
+    (questionId: string) => {
       setQuestions((prev) => {
-        const question = prev.find((q) => q.questionText === questionText);
+        const question = prev.find((q) => q._id === questionId);
         if (!question) return prev;
-
         sendMessage({
           type: "markQuestion",
           payload: {
             roomId: roomCode,
-            questionText,
+            questionId: questionId,
             action: question.highlighted ? "unhighlighted" : "highlighted",
+            userId: presenterName,
           },
         });
-
         return prev;
       });
     },
-    [roomCode, sendMessage]
+    [roomCode, presenterName, sendMessage]
   );
 
   const handleEndSession = useCallback(() => {
@@ -253,7 +258,7 @@ export default function PresenterSession() {
       type: "close",
       payload: {
         roomId: roomCode,
-        owner: presenterName,
+        ownerId: presenterName,
       },
     });
     toast.success("Session ended successfully");
@@ -272,26 +277,15 @@ export default function PresenterSession() {
 
   // Modify your initialization effect
   useEffect(() => {
-    if (isConnected && !initialized) {
+    if (roomCode && presenterName) {
       const link = `${window.location.origin}/attendee/join?code=${roomCode}`;
       setShareLink(link);
-
-      sendMessage({
-        type: "join",
-        payload: {
-          roomId: roomCode,
-          attendee: presenterName,
-        },
-      });
-
       sendMessage({
         type: "getSession",
-        payload: { roomId: roomCode },
+        payload: { roomId: roomCode }
       });
-
-      setInitialized(true);
     }
-  }, [isConnected, initialized, roomCode, presenterName, sendMessage]);
+  }, [roomCode, presenterName, sendMessage]);
 
   // Initialize session only once
   useEffect(() => {
@@ -306,7 +300,10 @@ export default function PresenterSession() {
         type: "join",
         payload: {
           roomId: roomCode,
-          attendee: presenterName,
+          attendee: {
+            id: presenterName,
+            name: presenterName
+          }
         },
       });
 
@@ -317,20 +314,6 @@ export default function PresenterSession() {
       });
     }
   }, [roomCode, presenterName, sendMessage]);
-
-  useEffect(() => {
-    if (isConnected && !initialized) {
-      // Initialize session only once when connected
-      sendMessage({
-        type: "join",
-        payload: {
-          roomId: params.roomCode,
-          attendee: searchParams.get("presenter") || "Presenter",
-        },
-      });
-      setInitialized(true);
-    }
-  }, [isConnected, initialized, params.roomCode, searchParams, sendMessage]);
 
   // Handle incoming messages
   useEffect(() => {
@@ -355,8 +338,8 @@ export default function PresenterSession() {
       }
 
       // Then sort by vote score (upVotes - downVotes)
-      const aScore = a.upVotes - a.downVotes;
-      const bScore = b.upVotes - b.downVotes;
+      const aScore = (a.upVotes || 0) - (a.downVotes || 0);
+      const bScore = (b.upVotes || 0) - (b.downVotes || 0);
 
       // If scores are equal, newer questions come first
       if (bScore === aScore) {
@@ -369,9 +352,19 @@ export default function PresenterSession() {
     });
 
   const totalVotes = questions.reduce(
-    (acc, q) => acc + q.upVotes - q.downVotes,
+    (acc, q) => acc + ((q.upVotes || 0) - (q.downVotes || 0)),
     0
   );
+
+  // Always fetch session data on page load/refresh for presenter
+  useEffect(() => {
+    if (roomCode) {
+      sendMessage({
+        type: "getSession",
+        payload: { roomId: roomCode }
+      });
+    }
+  }, [roomCode, sendMessage]);
 
   // MOVE ALL CONDITIONAL RENDERING TO THE END, AFTER ALL HOOKS
   if (!isConnected) {
@@ -586,8 +579,8 @@ function QuestionsList({
   onToggleHighlighted,
 }: {
   questions: Question[];
-  onToggleAnswered: (questionText: string) => void;
-  onToggleHighlighted: (questionText: string) => void;
+  onToggleAnswered: (questionId: string) => void;
+  onToggleHighlighted: (questionId: string) => void;
 }) {
   if (questions.length === 0) {
     return (
@@ -607,7 +600,7 @@ function QuestionsList({
     <div className="space-y-4">
       {questions.map((question) => (
         <Card
-          key={`${question.questionText}-${question.author}`}
+          key={question._id}
           className={`transition-all ${
             question.highlighted ? "border-2 border-yellow-400" : ""
           } ${question.answered ? "bg-gray-50 dark:bg-gray-800/50" : ""}`}
@@ -619,7 +612,7 @@ function QuestionsList({
                   variant="outline"
                   className="flex h-10 w-10 items-center justify-center rounded-full text-lg"
                 >
-                  {question.upVotes - question.downVotes}
+                  {(question.upVotes || 0) - (question.downVotes || 0)}
                 </Badge>
                 <span className="mt-1 text-xs text-gray-500">votes</span>
               </div>
@@ -640,7 +633,7 @@ function QuestionsList({
                       className={`h-8 w-8 ${
                         question.highlighted ? "text-yellow-500" : ""
                       }`}
-                      onClick={() => onToggleHighlighted(question.questionText)}
+                      onClick={() => onToggleHighlighted(question._id)}
                       title={
                         question.highlighted
                           ? "Remove highlight"
@@ -658,7 +651,7 @@ function QuestionsList({
                       className={`h-8 w-8 ${
                         question.answered ? "text-green-500" : ""
                       }`}
-                      onClick={() => onToggleAnswered(question.questionText)}
+                      onClick={() => onToggleAnswered(question._id)}
                       title={
                         question.answered
                           ? "Mark as unanswered"

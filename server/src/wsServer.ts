@@ -1,6 +1,6 @@
 import { WebSocketServer } from "ws";
 import { websocketService } from './services/websocketService'
-import { pubSubService } from './redis/pubSubService' // NEW IMPORT
+import { pubSubService } from './redis/pubSubService'
 import {
   handleCreateSession,
   handleJoinSession,
@@ -11,12 +11,13 @@ import {
   handleLeaveSession,
   handleCloseSession,
 } from './handlers/messageHandlers'
+import { sessionService } from './services/sessionService';
 
 export const createWebSocketServer = () => {
   const wss = new WebSocketServer({ noServer: true });
 
   // Initialize Redis subscriber when server starts
-  pubSubService.initializeSubscriber(); // NEW LINE
+  pubSubService.initializeSubscriber();
 
   wss.on("connection", (socket) => {
     websocketService.addClient(socket)
@@ -25,34 +26,34 @@ export const createWebSocketServer = () => {
       console.error("WebSocket error:", error)
     })
 
-    socket.on("message", (message) => {
+    socket.on("message", async (message) => {
       try {
         const parsedMessage = JSON.parse(message.toString())
 
         switch (parsedMessage.type) {
           case "create":
-            handleCreateSession(socket, parsedMessage.payload)
+            await handleCreateSession(socket, parsedMessage.payload)
             break
           case "join":
-            handleJoinSession(socket, parsedMessage.payload)
+            await handleJoinSession(socket, parsedMessage.payload)
             break
           case "getSession":
-            handleGetSession(socket, parsedMessage.payload)
+            await handleGetSession(socket, parsedMessage.payload)
             break
           case "question":
-            handleQuestion(socket, parsedMessage.payload)
+            await handleQuestion(socket, parsedMessage.payload)
             break
           case "vote":
-            handleVote(socket, parsedMessage.payload)
+            await handleVote(socket, parsedMessage.payload)
             break
           case "markQuestion":
-            handleMarkQuestion(socket, parsedMessage.payload)
+            await handleMarkQuestion(socket, parsedMessage.payload)
             break
           case "leave":
-            handleLeaveSession(socket, parsedMessage.payload)
+            await handleLeaveSession(socket, parsedMessage.payload)
             break
           case "close":
-            handleCloseSession(socket, parsedMessage.payload)
+            await handleCloseSession(socket, parsedMessage.payload)
             break
           default:
             console.error("Unknown message type:", parsedMessage.type)
@@ -70,18 +71,21 @@ export const createWebSocketServer = () => {
       }
     })
 
-    socket.on("close", () => {
+    socket.on("close", async () => {
       const client = websocketService.removeClient(socket)
       
       if (client && client.roomId && client.attendee) {
-        const { sessionService } = require('./services/sessionService')
-        const session = sessionService.leaveSession(client.roomId, client.attendee)
-        
-        if (session) {
-          websocketService.broadcastToRoom(client.roomId, {
-            type: "attendeeLeft",
-            payload: { attendee: client.attendee, attendees: session.attendees },
-          })
+        try {
+          const session = await sessionService.leaveSession(client.roomId, client.attendee.id)
+          
+          if (session) {
+            websocketService.broadcastToRoom(client.roomId, {
+              type: "attendeeLeft",
+              payload: { attendee: client.attendee, attendees: session.attendees },
+            })
+          }
+        } catch (error) {
+          console.error("Error handling client disconnect:", error)
         }
       }
     })
