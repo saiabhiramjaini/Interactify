@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, Suspense } from "react"
 import { useRouter, useSearchParams } from "next/navigation"
 import Link from "next/link"
 import { Button } from "@/components/ui/button"
@@ -13,7 +13,7 @@ import { useWebSocket } from "@/context/WebSocketContext"
 import { generateAttendeeId } from "@/utils/generateAttendeeId"
 import { randomName } from "@/utils/generateAttendeeName"
 
-export default function JoinSession() {
+function JoinSessionContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const [roomCode, setRoomCode] = useState("")
@@ -127,5 +127,20 @@ export default function JoinSession() {
         </form>
       </Card>
     </div>
+  )
+}
+
+export default function JoinSession() {
+  return (
+    <Suspense fallback={
+      <div className="container mx-auto flex min-h-screen items-center justify-center">
+        <div className="text-center">
+          <h2 className="text-xl font-semibold">Loading...</h2>
+          <p className="text-gray-500">Please wait while we prepare your session</p>
+        </div>
+      </div>
+    }>
+      <JoinSessionContent />
+    </Suspense>
   )
 }
