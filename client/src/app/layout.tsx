@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 import { Toaster } from "sonner";
 import { WebSocketProvider } from "@/context/WebSocketContext";
+import GridBackgroundDemo from "@/components/ui/grid-background-demo";
 
 export const metadata: Metadata = {
   title: "Interactify",
@@ -16,7 +17,14 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body>
-        <WebSocketProvider>{children}</WebSocketProvider>
+        <WebSocketProvider>
+          <div className="relative">
+            <GridBackgroundDemo />
+            <div className="relative z-10">
+              {children}
+            </div>
+          </div>
+        </WebSocketProvider>
         <Toaster />
       </body>
     </html>
