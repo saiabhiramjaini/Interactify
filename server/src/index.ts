@@ -57,6 +57,7 @@ async function initializeServices() {
       throw new Error('Kafka producer or consumer not properly initialized');
     }
     
+    
     await kafkaProducer.connect();
     await kafkaConsumer.connect();
     await kafkaConsumer.start();
