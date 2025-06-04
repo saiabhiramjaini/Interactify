@@ -301,17 +301,11 @@ const [initialized, setInitialized] = useState(false);
 
   const handleVote = useCallback(
     (questionId: string) => {
-      const isAlreadyVoted = votedQuestions.has(questionId);
       const attendeeId = searchParams.get("id");
 
       if (!attendeeId) {
         toast.error("Invalid session ID");
         router.push("/");
-        return;
-      }
-
-      if (isAlreadyVoted) {
-        toast("You have already voted on this question");
         return;
       }
 
@@ -323,11 +317,8 @@ const [initialized, setInitialized] = useState(false);
           voterId: attendeeId,
         },
       });
-
-      setVotedQuestions((prev) => new Set([...prev, questionId]));
-      toast("Vote recorded!");
     },
-    [roomCode, sendMessage, votedQuestions, searchParams, router]
+    [roomCode, sendMessage, searchParams, router]
   );
 
   const handleLeaveSession = useCallback(() => {
@@ -356,33 +347,6 @@ const [initialized, setInitialized] = useState(false);
       });
     }
   }, [lastMessage, roomCode, sendMessage]);
-
-  // Always join and fetch session data on page load/refresh
-  useEffect(() => {
-    if (roomCode && attendeeName) {
-      const attendeeId = searchParams.get("id");
-      if (!attendeeId) {
-        toast.error("Invalid session ID");
-        router.push("/");
-        return;
-      }
-
-      sendMessage({
-        type: "join",
-        payload: {
-          roomId: roomCode,
-          attendee: {
-            id: attendeeId,
-            name: attendeeName
-          }
-        }
-      });
-      sendMessage({
-        type: "getSession",
-        payload: { roomId: roomCode }
-      });
-    }
-  }, [roomCode, attendeeName, sendMessage, searchParams, router]);
 
   return (
     <div className="container mx-auto px-4 py-8">
@@ -476,9 +440,9 @@ const [initialized, setInitialized] = useState(false);
                     <div className="flex gap-4">
                       <div className="flex flex-col items-center">
                         <Button
-                          variant={question.upVotedBy.includes(attendeeName) ? "default" : "outline"}
+                          variant={question.upVotedBy.includes(attendeeId || '') ? "default" : "outline"}
                           size="icon"
-                          className={`h-10 w-10 rounded-full ${question.upVotedBy.includes(attendeeName) ? "bg-blue-500 text-white hover:bg-blue-600" : ""}`}
+                          className={`h-10 w-10 rounded-full ${question.upVotedBy.includes(attendeeId || '') ? "bg-blue-500 text-white hover:bg-blue-600" : ""}`}
                           onClick={() => handleVote(question._id)}
                           disabled={question.answered}
                         >

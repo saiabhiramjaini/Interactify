@@ -30,6 +30,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { useWebSocket } from "@/context/WebSocketContext";
+import React from "react";
 
 interface Question {
   _id: string;
@@ -37,6 +38,7 @@ interface Question {
   upVotes: number;
   downVotes: number;
   author: string;
+  authorName?: string;
   createdAt: string;
   answered: boolean;
   highlighted: boolean;
@@ -66,10 +68,12 @@ export default function PresenterSession() {
   const [showEndSessionDialog, setShowEndSessionDialog] = useState(false);
   const [sessionClosed, setSessionClosed] = useState(false);
   const [initialized, setInitialized] = useState(false);
+  const [showLeaveDialog, setShowLeaveDialog] = useState(false);
 
   // Refs must be declared with other hooks
   const hasInitialized = useRef(false);
   const lastProcessedMessage = useRef<any>(null);
+  const shownQuestionToasts = useRef<Set<string>>(new Set());
 
   // Memoize the message handler to prevent recreating it on each render
   const handleMessage = useCallback((message: any) => {
@@ -87,31 +91,32 @@ export default function PresenterSession() {
       case "sessionData":
         const session = message.payload.session;
         setQuestions(session.questions || []);
-        setAttendees((session.attendees || []).map((a: any) => a.name || a.id));
+        setAttendees((session.attendees || []).map((a: any) => a.name));
         break;
 
       case "attendeeJoined":
         setAttendees((prev) => {
           const attendee = message.payload.attendee;
-          const attendeeName = attendee.name || attendee.id || attendee;
-          if (!prev.includes(attendeeName)) {
+          const attendeeName = attendee.name;
+          const newAttendees = message.payload.attendees.map((a: any) => a.name);
+          // Show toast only if attendeeName is in newAttendees but not in prev
+          if (!prev.includes(attendeeName) && newAttendees.includes(attendeeName)) {
             toast(`${attendeeName} joined the session`);
-            return [...prev, attendeeName];
           }
-          return prev;
+          return newAttendees;
         });
         break;
 
       case "attendeeLeft":
         setAttendees((prev) => {
           const attendee = message.payload.attendee;
-          const attendeeName = attendee.name || attendee.id || attendee;
-          const newAttendees = prev.filter((a) => a !== attendeeName);
-          if (newAttendees.length !== prev.length) {
+          const attendeeName = attendee.name;
+          const newAttendees = message.payload.attendees.map((a: any) => a.name);
+          // Show toast only if attendeeName is in prev but not in newAttendees
+          if (prev.includes(attendeeName) && !newAttendees.includes(attendeeName)) {
             toast(`${attendeeName} left the session`);
-            return newAttendees;
           }
-          return prev;
+          return newAttendees;
         });
         break;
 
@@ -119,15 +124,18 @@ export default function PresenterSession() {
       case "questionAdded":
         setQuestions((prev) => {
           const newQuestion = message.payload.question || message.payload;
-          // Check if question already exists
+          const uniqueKey = `${newQuestion.questionText}|${newQuestion.author || newQuestion.authorName || "Anonymous"}`;
+          if (!shownQuestionToasts.current.has(uniqueKey)) {
+            shownQuestionToasts.current.add(uniqueKey);
+            const author = newQuestion.author || newQuestion.authorName || "Anonymous";
+            toast(`New question from ${author}`);
+          }
           const exists = prev.some(
             (q) =>
               q.questionText === newQuestion.questionText &&
-              q.author === newQuestion.author
+              (q.author === newQuestion.author || q.authorName === newQuestion.authorName)
           );
-
           if (!exists) {
-            toast(`New question from ${newQuestion.author}`);
             return [...prev, newQuestion];
           }
           return prev;
@@ -186,7 +194,6 @@ export default function PresenterSession() {
       case "sessionClosed":
         setSessionClosed(true);
         toast.error("The session has been ended by the presenter");
-        setTimeout(() => router.push("/"), 3000);
         break;
 
       case "error":
@@ -566,6 +573,46 @@ export default function PresenterSession() {
             >
               End Session
             </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={showLeaveDialog} onOpenChange={setShowLeaveDialog}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Leave Session?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to leave this session?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => setShowLeaveDialog(false)}>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={() => {
+              setShowLeaveDialog(false);
+              // Send leave message and redirect
+              sendMessage({
+                type: "leave",
+                payload: {
+                  roomId: roomCode,
+                  attendeeId: presenterName,
+                },
+              });
+              router.push("/");
+            }}>Leave</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={sessionClosed}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Session Ended</AlertDialogTitle>
+            <AlertDialogDescription>
+              The presenter has ended this session. You will be redirected to the home page.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogAction onClick={() => router.push("/")}>Go Home</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

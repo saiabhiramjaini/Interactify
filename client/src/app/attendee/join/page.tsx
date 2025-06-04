@@ -37,7 +37,7 @@ function JoinSessionContent() {
     switch (lastMessage.type) {
       case "sessionJoined":
         // Successfully joined the session
-        toast.success("Successfully joined the session!")
+        // toast.success("Successfully joined the session!")
         router.push(`/attendee/session/${roomCode}?name=${encodeURIComponent(attendeeName)}&id=${attendeeId}`)
         break
         

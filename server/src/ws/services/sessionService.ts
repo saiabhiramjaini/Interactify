@@ -266,12 +266,31 @@ class SessionService {
     // Only owner can close session
     if (session.owner !== ownerId) return false;
 
+    // First mark the session as closed
     await kafkaProducer.sendDbOperation({
       type: 'update',
       collection: 'sessions',
       query: { roomId },
       data: { $set: { sessionStatus: 'closed' } }
     });
+
+    // Wait a bit for Kafka to process the message
+    await new Promise(resolve => setTimeout(resolve, 100));
+
+    // Then delete the session after a delay
+    setTimeout(async () => {
+      try {
+        await kafkaProducer.sendDbOperation({
+          type: 'delete',
+          collection: 'sessions',
+          query: { roomId },
+          data: {} // Add empty data object to satisfy type requirement
+        });
+        console.log(`Session ${roomId} deleted successfully`);
+      } catch (error) {
+        console.error(`Error deleting session ${roomId}:`, error);
+      }
+    }, 5000); // Wait 5 seconds before deleting to ensure all clients have received the close message
 
     return true;
   }
