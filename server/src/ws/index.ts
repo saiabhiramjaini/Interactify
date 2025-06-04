@@ -1,6 +1,6 @@
 import { WebSocketServer } from "ws";
 import { websocketService } from './services/websocketService'
-import { pubSubService } from './redis/pubSubService'
+import { pubSubService } from '../redis/pubSubService'
 import {
   handleCreateSession,
   handleJoinSession,

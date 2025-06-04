@@ -1,7 +1,7 @@
-import { SessionModel } from '../db/models/sessionModel';
-import { Session, Question, Attendee } from '../types';
-import { generateRoomId } from '../utils/generateRoomId';
-import { kafkaProducer } from '../kafka/producer';
+import { SessionModel } from '../../db/models/sessionModel';
+import { Session, Question, Attendee } from '../../types';
+import { generateRoomId } from '../../utils/generateRoomId';
+import { kafkaProducer } from '../../kafka/producer';
 
 class SessionService {
   private transformSession(doc: any): Session {

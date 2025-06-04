@@ -1,6 +1,8 @@
 import { Kafka } from "kafkajs";
+import dotenv from "dotenv";
+dotenv.config();
 
 export const kafka = new Kafka({
-  clientId: "my-app", // Used to identify your app in logs/metrics
-  brokers: ["192.168.1.6:9092"], // Replace with your machine's private IP
+  clientId: "interactify-server", 
+  brokers: [`${process.env.PRIVATE_IP}:9092`], 
 });

@@ -1,5 +1,5 @@
 import { pub, sub } from './index';
-import { websocketService } from '../services/websocketService';
+import { websocketService } from '../ws/services/websocketService';
 
 class PubSubService {
   private isSubscriberInitialized = false;

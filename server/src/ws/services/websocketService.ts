@@ -1,5 +1,6 @@
 import { WebSocket } from "ws"
-import { ClientConnection, Attendee } from '../types'
+import { ClientConnection, Attendee } from '../../types'
+import { pubSubService } from '../../redis/pubSubService'
 
 class WebSocketService {
   private clients: ClientConnection[] = []
@@ -59,7 +60,6 @@ class WebSocketService {
     // If this is not from Redis (skipRedis = false), also publish to Redis
     // so other servers can send to their clients
     if (!skipRedis) {
-      const { pubSubService } = require('../redis/pubSubService')
       pubSubService.publishToRoom(roomId, message)
     }
   }

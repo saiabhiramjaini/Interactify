@@ -1,4 +1,4 @@
-import { Kafka, Partitioners } from "kafkajs";
+import { Partitioners } from "kafkajs";
 import { kafka } from "./client";
 
 export class KafkaProducer {

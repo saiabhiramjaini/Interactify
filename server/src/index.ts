@@ -1,13 +1,13 @@
 import express from 'express'
 import http from 'http'
-import { createWebSocketServer } from './wsServer'
+import cors from 'cors'
+import { createWebSocketServer } from './ws'
 import connectDB from './db/connect'
 import { kafkaProducer, kafkaConsumer, initializeKafka } from './kafka/index'
 
 const app = express()
 const server = http.createServer(app)
 
-// Create WebSocket server
 const wss = createWebSocketServer()
 
 // Handle HTTP to WebSocket upgrade
@@ -22,12 +22,10 @@ server.on('upgrade', (request, socket, head) => {
 
 // Express middleware
 app.use(express.json())
-app.use((req, res, next) => {
-  // Enable CORS if needed
-  res.header('Access-Control-Allow-Origin', '*')
-  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept')
-  next()
-})
+app.use(cors({
+  origin: 'http://localhost:3000',
+  credentials: true,
+}))
 
 // Get port from environment variable or default to 8080
 const PORT = process.env.PORT || 8080
@@ -76,11 +74,6 @@ server.listen(PORT, () => {
   console.log(`🚀 Server ${SERVER_ID} starting...`)
   console.log(`HTTP server is running on http://localhost:${PORT}`)
   console.log(`WebSocket server is running on ws://localhost:${PORT}`)
-  
-  // Handle server errors
-  server.on('error', (error) => {
-    console.error('Server error:', error)
-  })
   
   initializeServices();
 })
