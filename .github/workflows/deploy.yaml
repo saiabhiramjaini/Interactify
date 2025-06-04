@@ -38,6 +38,8 @@ jobs:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USERNAME }}
           key: ${{ secrets.SSH_KEY }}
+          key_path: /tmp/deploy_key
+          debug: true
           script: |
             sudo docker pull saiabhiramjaini/interactify-server:latest
             sudo docker stop interactify-server || true
