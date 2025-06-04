@@ -63,9 +63,6 @@ Interactify solves the challenge of managing audience questions during seminars 
 
 ![Image](https://github.com/user-attachments/assets/2a6d5681-cae3-48db-93a3-aea68e6be29f)
 
-## Deployment 
-
-![Image](https://github.com/user-attachments/assets/15969064-a942-4a55-b123-381616105984)
 
 ## Setup & Installation
 
@@ -153,18 +150,8 @@ The project uses GitHub Actions for continuous integration and deployment:
    - Pulls images from Docker Hub
    - Deploys to production
 
-### Manual Deployment Steps
-1. **Frontend** (Vercel):
-   ```bash
-   cd client
-   vercel deploy
-   ```
+![Image](https://github.com/user-attachments/assets/15969064-a942-4a55-b123-381616105984)
 
-2. **Backend** (AWS EC2):
-   ```bash
-   # On your EC2 instance
-   docker-compose -f production-compose.yml up -d
-   ```
 
 ## Scaling Test
 
