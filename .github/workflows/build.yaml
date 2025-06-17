@@ -5,12 +5,12 @@ on :
     branches:
       - main
     paths:
-      - 'server/**'
+      - 'server-without-kafka/**'
   push:
     branches:
       - main
     paths:
-      - 'server/**'
+      - 'server-without-kafka/**'
 
 jobs:
   build:
@@ -26,11 +26,11 @@ jobs:
 
       - name: Install dependencies
         run: npm install
-        working-directory: ./server
+        working-directory: ./server-without-kafka
 
       - name: Install Typescript
         run: npm install -g typescript
 
       - name: Build
         run: npm run build
-        working-directory: ./server
+        working-directory: ./server-without-kafka

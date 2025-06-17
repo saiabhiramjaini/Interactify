@@ -135,6 +135,11 @@ docker run -d --name kafka -p 9092:9092 \
 
 ## Deployment
 
+Run these docker containers first:
+- redis
+- zookeeper
+- kafka
+
 ### CI/CD Pipeline
 The project uses GitHub Actions for continuous integration and deployment:
 1. **Build Stage** (`build.yaml`):
@@ -151,6 +156,42 @@ The project uses GitHub Actions for continuous integration and deployment:
    - Deploys to production
 
 ![Image](https://github.com/user-attachments/assets/15969064-a942-4a55-b123-381616105984)
+
+
+
+## Actual Deployment
+
+### Lightweight Server Implementation (Without Kafka) 
+
+This is a simplified version of the main server implementation, specifically designed for deployment on resource-constrained environments like AWS EC2 t2.micro instances. This version removes the Kafka message broker to reduce memory usage while maintaining core functionality.
+
+### Key Differences from Main Server
+
+1. **No Kafka Integration**: 
+   - Removed Kafka producer/consumer logic
+   - Direct database operations instead of event-driven updates
+   - Reduced memory footprint
+
+2. **Simplified Architecture**:
+   - Direct MongoDB operations
+   - WebSocket communication remains unchanged
+   - Redis pub/sub functionality remains intact
+
+
+## Features
+
+- Real-time WebSocket communication
+- Session management
+- Question handling (asking, voting, answering, starring)
+- Redis pub/sub for scaling
+- MongoDB persistence
+
+### Deployment Considerations
+
+This version is specifically optimized for:
+- AWS EC2 t2.micro instances
+- Limited memory environments (< 1GB RAM)
+- Production deployments where Kafka is not necessary
 
 
 ## Scaling Test
