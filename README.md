@@ -55,6 +55,8 @@ Interactify solves the challenge of managing audience questions during seminars 
 
 ![Image](https://github.com/user-attachments/assets/0d9a7a63-4dd8-4245-8136-06e0b011a96a)
 
+![Image](https://github.com/user-attachments/assets/2bea3a24-a8b2-4c06-bbb9-a3f18cf6f310)
+
 
 1. **Client-Server Communication**: WebSocket connections for real-time updates
 2. **Redis Pub/Sub**: Handles message broadcasting across multiple server instances
