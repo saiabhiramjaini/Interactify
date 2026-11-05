@@ -9,7 +9,7 @@
 set -euo pipefail
 
 SHA="${1:?usage: deploy.sh <commit-sha>}"
-REPO_DIR="${REPO_DIR:-$HOME/interactify}"
+REPO_DIR="${REPO_DIR:-$HOME/Interactify}"
 BRANCH="${BRANCH:-main}"
 APP="${PM2_APP:-interactify}"
 ARTIFACT="${ARTIFACT:-$HOME/interactify-dist.tgz}"

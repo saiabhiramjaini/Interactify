@@ -3,7 +3,7 @@
 # opened once. Install with:
 #
 #   mkdir -p ~/.termux/boot
-#   cp ~/interactify/deploy/termux-boot.sh ~/.termux/boot/start-interactify
+#   cp ~/Interactify/deploy/termux-boot.sh ~/.termux/boot/start-interactify
 #   chmod +x ~/.termux/boot/start-interactify
 
 # Keep Android from suspending Termux
