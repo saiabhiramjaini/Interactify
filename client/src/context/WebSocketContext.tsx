@@ -1,97 +1,106 @@
 "use client"
 import { createContext, useContext, useEffect, useRef, useState, ReactNode, useCallback } from 'react'
 
-interface WebSocketMessage {
+export interface WebSocketMessage {
   type: string
   payload: any
 }
 
+type MessageListener = (message: WebSocketMessage) => void
+
 interface WebSocketContextType {
   sendMessage: (message: WebSocketMessage) => void
-  lastMessage: WebSocketMessage | null
+  // Every incoming message is delivered to every subscriber, in order
+  subscribe: (listener: MessageListener) => () => void
+  // Sends the join now if connected, and again first on every reconnect so the
+  // new socket is bound to the session again. Pass null when leaving.
+  setJoinMessage: (message: WebSocketMessage | null) => void
   isConnected: boolean
   reconnect: () => void
 }
 
 const WebSocketContext = createContext<WebSocketContextType | null>(null)
 
+const MAX_RECONNECT_DELAY = 30000
+
 export const WebSocketProvider = ({ children }: { children: ReactNode }) => {
   const ws = useRef<WebSocket | null>(null)
-  const [lastMessage, setLastMessage] = useState<WebSocketMessage | null>(null)
   const [isConnected, setIsConnected] = useState(false)
-  const reconnectAttempts = useRef(0)
+  const listeners = useRef(new Set<MessageListener>())
   const messageQueue = useRef<WebSocketMessage[]>([])
-  const shouldReconnect = useRef(true)
-  const isMounted = useRef(false)
+  const joinMessage = useRef<WebSocketMessage | null>(null)
+  const reconnectAttempts = useRef(0)
+  const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const active = useRef(false)
 
-  const cleanup = useCallback(() => {
-    if (ws.current) {
-      ws.current.onopen = null
-      ws.current.onclose = null
-      ws.current.onerror = null
-      ws.current.onmessage = null
-      if (ws.current.readyState === WebSocket.OPEN) {
-        ws.current.close()
-      }
-      ws.current = null
+  const clearReconnectTimer = useCallback(() => {
+    if (reconnectTimer.current) {
+      clearTimeout(reconnectTimer.current)
+      reconnectTimer.current = null
     }
   }, [])
 
   const connect = useCallback(() => {
-    if (!isMounted.current || !shouldReconnect.current) return
+    if (!active.current) return
 
-    cleanup()
+    // Never open a second socket while one is open or still connecting
+    const existing = ws.current
+    if (existing && (existing.readyState === WebSocket.OPEN || existing.readyState === WebSocket.CONNECTING)) return
 
+    clearReconnectTimer()
+
+    const scheduleReconnect = () => {
+      if (!active.current) return
+      const delay = Math.min(1000 * Math.pow(2, reconnectAttempts.current), MAX_RECONNECT_DELAY)
+      reconnectAttempts.current++
+      reconnectTimer.current = setTimeout(connect, delay)
+    }
+
+    let socket: WebSocket
     try {
-      const wsUrl = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8080'
-      ws.current = new WebSocket(wsUrl)
-
-      ws.current.onopen = () => {
-        if (!isMounted.current) return
-        console.log('Connected to WebSocket server')
-        setIsConnected(true)
-        reconnectAttempts.current = 0
-        // Process queued messages
-        while (messageQueue.current.length > 0 && ws.current?.readyState === WebSocket.OPEN) {
-          const message = messageQueue.current.shift()
-          if (message) ws.current.send(JSON.stringify(message))
-        }
-      }
-
-      ws.current.onmessage = (event) => {
-        if (!isMounted.current) return
-        try {
-          const message = JSON.parse(event.data)
-          setLastMessage(message)
-        } catch (error) {
-          console.error('Error parsing message:', error)
-        }
-      }
-
-      ws.current.onclose = () => {
-        if (!isMounted.current) return
-        setIsConnected(false)
-        if (shouldReconnect.current) {
-          const delay = Math.min(1000 * Math.pow(2, reconnectAttempts.current), 30000)
-          reconnectAttempts.current++
-          setTimeout(connect, delay)
-        }
-      }
-
-      ws.current.onerror = (error) => {
-        console.error('WebSocket error:', error)
-      }
+      socket = new WebSocket(process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8080')
     } catch (error) {
       console.error('WebSocket initialization error:', error)
-      setIsConnected(false)
-      const delay = Math.min(1000 * Math.pow(2, reconnectAttempts.current), 30000)
-      reconnectAttempts.current++
-      setTimeout(connect, delay)
+      scheduleReconnect()
+      return
     }
-  }, [cleanup])
+    ws.current = socket
+
+    socket.onopen = () => {
+      if (ws.current !== socket) return
+      setIsConnected(true)
+      reconnectAttempts.current = 0
+      if (joinMessage.current) socket.send(JSON.stringify(joinMessage.current))
+      while (messageQueue.current.length > 0) {
+        socket.send(JSON.stringify(messageQueue.current.shift()))
+      }
+    }
+
+    socket.onmessage = (event) => {
+      if (ws.current !== socket) return
+      let message: WebSocketMessage
+      try {
+        message = JSON.parse(event.data)
+      } catch (error) {
+        console.error('Error parsing message:', error)
+        return
+      }
+      listeners.current.forEach((listener) => listener(message))
+    }
+
+    socket.onclose = () => {
+      if (ws.current !== socket) return
+      ws.current = null
+      setIsConnected(false)
+      scheduleReconnect()
+    }
+
+    socket.onerror = (error) => {
+      console.error('WebSocket error:', error)
+    }
+  }, [clearReconnectTimer])
 
   const reconnect = useCallback(() => {
-    shouldReconnect.current = true
     reconnectAttempts.current = 0
     connect()
   }, [connect])
@@ -101,25 +110,43 @@ export const WebSocketProvider = ({ children }: { children: ReactNode }) => {
       ws.current.send(JSON.stringify(message))
     } else {
       messageQueue.current.push(message)
-      if (!isConnected && reconnectAttempts.current === 0) {
-        connect()
-      }
+      if (!ws.current) connect()
     }
-  }, [isConnected, connect])
+  }, [connect])
+
+  const subscribe = useCallback((listener: MessageListener) => {
+    listeners.current.add(listener)
+    return () => {
+      listeners.current.delete(listener)
+    }
+  }, [])
+
+  const setJoinMessage = useCallback((message: WebSocketMessage | null) => {
+    joinMessage.current = message
+    if (!message) return
+    if (ws.current?.readyState === WebSocket.OPEN) {
+      ws.current.send(JSON.stringify(message))
+    } else if (!ws.current) {
+      connect()
+    }
+  }, [connect])
 
   useEffect(() => {
-    isMounted.current = true
+    // Reset on every mount: React StrictMode unmounts and remounts once in development
+    active.current = true
     connect()
 
     return () => {
-      isMounted.current = false
-      shouldReconnect.current = false
-      cleanup()
+      active.current = false
+      clearReconnectTimer()
+      const socket = ws.current
+      ws.current = null
+      socket?.close()
     }
-  }, [connect, cleanup])
+  }, [connect, clearReconnectTimer])
 
   return (
-    <WebSocketContext.Provider value={{ sendMessage, lastMessage, isConnected, reconnect }}>
+    <WebSocketContext.Provider value={{ sendMessage, subscribe, setJoinMessage, isConnected, reconnect }}>
       {children}
     </WebSocketContext.Provider>
   )
@@ -131,4 +158,17 @@ export const useWebSocket = () => {
     throw new Error('useWebSocket must be used within a WebSocketProvider')
   }
   return context
+}
+
+// Calls `handler` for every incoming message while the component is mounted.
+// The latest handler is always used, so it can read current state without resubscribing.
+export const useWebSocketMessages = (handler: MessageListener) => {
+  const { subscribe } = useWebSocket()
+  const handlerRef = useRef(handler)
+
+  useEffect(() => {
+    handlerRef.current = handler
+  })
+
+  useEffect(() => subscribe((message) => handlerRef.current(message)), [subscribe])
 }

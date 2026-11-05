@@ -7,20 +7,18 @@ WORKDIR /usr/src/app
 # Copy package files
 COPY package*.json ./
 
-# Install dependencies
+# Install dependencies (dev dependencies are needed for the TypeScript build)
 RUN npm install
 
 # Copy source code
 COPY . .
 
-# install typescript globally
-RUN npm i -g typescript
+# Build the server, then drop dev dependencies from the image
+RUN npm run build && npm prune --omit=dev
 
-# build the server
-RUN npm run build
-
-# Expose the port your app runs on
+# The port the server listens on inside the container; override with -e PORT=...
+ENV PORT=8000
 EXPOSE 8000
 
 # Command to run the application
-CMD ["node", "dist/index.js"] 
+CMD ["node", "dist/index.js"]

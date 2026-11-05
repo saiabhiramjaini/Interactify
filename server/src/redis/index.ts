@@ -1,14 +1,14 @@
 import Redis from 'ioredis';
-import dotenv from 'dotenv';
+import { config } from '../config';
 
-dotenv.config();
-
-const redisConfig = {
-  host: process.env.REDIS_HOST!,
-  port: Number(process.env.REDIS_PORT!),
-};
+// lazyConnect: nothing connects on import; connectRedis() is called during startup.
+const redisConfig = { ...config.redis, lazyConnect: true };
 
 const pub = new Redis(redisConfig);
 const sub = new Redis(redisConfig);
 
-export { pub, sub };
+const connectRedis = async (): Promise<void> => {
+  await Promise.all([pub.connect(), sub.connect()]);
+};
+
+export { pub, sub, connectRedis };

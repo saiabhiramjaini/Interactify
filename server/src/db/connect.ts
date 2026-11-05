@@ -1,20 +1,13 @@
 import mongoose from 'mongoose';
-import dotenv from 'dotenv';
-dotenv.config();
+import { config } from '../config';
 
-const connectDB = async () =>{
-    try{
-        await mongoose.connect(process.env.MONGO_URI!)
-        .then(()=>{
-            console.log('MongoDB Connected');
-        })
-        .catch((err)=>{
-            console.log(err);
-        });
-    }
-    catch(err){
-        console.log(err);
-    }
-}
+// Throws on failure so startup aborts instead of running without a database.
+const connectDB = async (uri: string = config.mongoUri) => {
+  if (!uri) {
+    throw new Error('MONGO_URI is not set');
+  }
+  await mongoose.connect(uri);
+  console.log('MongoDB Connected');
+};
 
 export default connectDB;

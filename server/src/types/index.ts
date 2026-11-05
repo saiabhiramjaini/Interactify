@@ -1,4 +1,3 @@
-import { ObjectId } from "mongoose";
 import { WebSocket } from "ws";
 
 export interface Attendee {
@@ -7,7 +6,7 @@ export interface Attendee {
 }
 
 export interface Question {
-  _id?: ObjectId;
+  _id?: string;
   questionText: string;
   upVotes: number;
   upVotedBy: string[];
@@ -20,7 +19,7 @@ export interface Question {
 }
 
 export interface Session {
-  _id?: ObjectId;
+  _id?: string;
   sessionName: string;
   roomId: string;
   owner: string;
@@ -31,9 +30,13 @@ export interface Session {
   updatedAt?: Date;
 }
 
+export type ClientRole = "attendee" | "presenter";
+
 export interface ClientConnection {
   socket: WebSocket;
   roomId?: string;
+  role?: ClientRole;
+  // Set when role is "attendee"; the identity the server acts on for this socket.
   attendee?: Attendee;
 }
 
@@ -63,6 +66,8 @@ export interface SessionCreatedResponse {
   type: 'sessionCreated';
   payload: {
     session: Session;
+    // Only ever sent to the presenter who created the session
+    ownerToken: string;
   };
 }
 
@@ -70,6 +75,7 @@ export interface SessionJoinedResponse {
   type: 'sessionJoined';
   payload: {
     session: Session;
+    role: ClientRole;
   };
 }
 

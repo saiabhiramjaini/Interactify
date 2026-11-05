@@ -1,46 +1,65 @@
 import { pub, sub } from './index';
+import { config } from '../config';
 import { websocketService } from '../ws/services/websocketService';
+
+const ROOM_CHANNEL_PREFIX = 'room:';
+
+interface RoomEnvelope {
+  payload: any;
+  timestamp: number;
+  serverId: string;
+  instanceId: string;
+}
 
 class PubSubService {
   private isSubscriberInitialized = false;
 
-  // Initialize the subscriber to listen for messages from other servers
-  initializeSubscriber(): void {
+  // Listen for room messages published by other server instances
+  async initializeSubscriber(): Promise<void> {
     if (this.isSubscriberInitialized) return;
 
-    // Listen to all room channels (we'll use pattern matching)
-    sub.psubscribe('room:*');
-    
-    // When we receive a message from Redis
-    sub.on('pmessage', (pattern: string, channel: string, message: string) => {
-      try {
-        const data = JSON.parse(message);
-        const roomId = channel.replace('room:', ''); // Extract roomId from channel name
-        
-        // Broadcast this message to our local clients in this room
-        websocketService.broadcastToRoom(roomId, data.payload, undefined, true);
-      } catch (error) {
-        console.error('Error processing pub/sub message:', error);
-      }
+    await sub.psubscribe(`${ROOM_CHANNEL_PREFIX}*`);
+    sub.on('pmessage', (_pattern: string, channel: string, message: string) => {
+      this.handleRoomMessage(channel, message);
     });
 
     this.isSubscriberInitialized = true;
     console.log('Redis subscriber initialized');
   }
 
-  // Send a message to all servers (including this one)
-  publishToRoom(roomId: string, message: any): void {
-    const channel = `room:${roomId}`;
-    const data = {
-      payload: message,
-      timestamp: Date.now(),
-      serverId: process.env.SERVER_ID || 'unknown' // Optional: identify which server sent it
-    };
-    
-    pub.publish(channel, JSON.stringify(data));
+  handleRoomMessage(channel: string, message: string): void {
+    try {
+      const data = JSON.parse(message) as RoomEnvelope;
+
+      // This instance already delivered the message to its own clients before
+      // publishing it, so delivering it again would duplicate it.
+      if (data.instanceId === config.instanceId) return;
+
+      const roomId = channel.slice(ROOM_CHANNEL_PREFIX.length);
+      websocketService.deliverToRoom(roomId, data.payload);
+
+      if (data.payload?.type === 'sessionClosed') {
+        websocketService.clearClientsFromRoom(roomId);
+      }
+    } catch (error) {
+      console.error('Error processing pub/sub message:', error);
+    }
   }
 
-  // Clean up when shutting down
+  // Share a room message with the other server instances
+  publishToRoom(roomId: string, message: any): void {
+    const data: RoomEnvelope = {
+      payload: message,
+      timestamp: Date.now(),
+      serverId: config.serverId,
+      instanceId: config.instanceId,
+    };
+
+    pub.publish(`${ROOM_CHANNEL_PREFIX}${roomId}`, JSON.stringify(data)).catch((error) => {
+      console.error('Error publishing to Redis:', error);
+    });
+  }
+
   disconnect(): void {
     pub.disconnect();
     sub.disconnect();

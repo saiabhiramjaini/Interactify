@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
@@ -16,7 +16,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ArrowLeft, Presentation, Mic, Users } from "lucide-react";
 import { toast } from "sonner";
-import { useWebSocket } from "@/context/WebSocketContext";
+import { useWebSocket, useWebSocketMessages } from "@/context/WebSocketContext";
+import { savePresenterToken } from "@/utils/presenterToken";
 import { motion } from "framer-motion";
 
 export default function CreateSession() {
@@ -24,22 +25,25 @@ export default function CreateSession() {
   const [sessionName, setSessionName] = useState("");
   const [presenterName, setPresenterName] = useState("");
   const [isCreating, setIsCreating] = useState(false);
-  const { sendMessage, lastMessage } = useWebSocket();
+  const { sendMessage } = useWebSocket();
 
-  useEffect(() => {
-    if (lastMessage?.type === "sessionCreated") {
-      const { session } = lastMessage.payload;
+  useWebSocketMessages((message) => {
+    if (!isCreating) return;
+
+    if (message.type === "sessionCreated") {
+      const { session, ownerToken } = message.payload;
+      savePresenterToken(session.roomId, ownerToken);
       toast.success("Session created successfully!");
       router.push(
         `/presenter/session/${session.roomId}?name=${encodeURIComponent(
           session.sessionName
         )}&presenter=${encodeURIComponent(session.owner)}`
       );
-    } else if (lastMessage?.type === "error") {
-      toast.error(lastMessage.payload.message);
+    } else if (message.type === "error") {
+      toast.error(message.payload.message);
       setIsCreating(false);
     }
-  }, [lastMessage, router]);
+  });
 
   const handleCreateSession = async (e: React.FormEvent) => {
     e.preventDefault();

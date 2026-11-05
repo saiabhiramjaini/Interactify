@@ -19,12 +19,13 @@ Interactify solves the challenge of managing audience questions during seminars 
 **For Presenters:**
 - Create interactive sessions with unique room codes
 - View real-time question ranking
-- Moderate questions as needed
+- Mark questions answered or highlighted, and end the session
+- Presenter controls are tied to the browser that created the session (a secret owner token kept in `localStorage`)
 
 **For Attendees:**
 - Join sessions via room code or shared link
-- Submit questions anonymously or with identification
-- Upvote/downvote other participants' questions
+- Submit questions under a generated or chosen display name
+- Upvote questions (click again to remove your vote)
 - See question rankings update in real-time
 
 ## Tech Stack
@@ -39,7 +40,7 @@ Interactify solves the challenge of managing audience questions during seminars 
 - **Node.js** (Runtime environment)
 - **WebSockets** (Real-time communication)
 - **Redis** (Pub/Sub pattern for scalability)
-- **Kafka** (High-volume data processing)
+- **Kafka** (Optional write pipeline, enabled with `ENABLE_KAFKA=true`)
 
 ### Database
 - **MongoDB Atlas** (Cloud database service)
@@ -60,7 +61,7 @@ Interactify solves the challenge of managing audience questions during seminars 
 
 1. **Client-Server Communication**: WebSocket connections for real-time updates
 2. **Redis Pub/Sub**: Handles message broadcasting across multiple server instances
-3. **Kafka**: Processes high volumes of interaction data
+3. **Kafka (optional)**: When enabled, session writes are produced to the `db-operations` topic (keyed by room so each room's writes stay in order), applied by a consumer, and acknowledged back over Redis before the server replies
 4. **MongoDB**: Persistent storage for sessions and questions
 
 ![Image](https://github.com/user-attachments/assets/2a6d5681-cae3-48db-93a3-aea68e6be29f)
@@ -90,7 +91,12 @@ Interactify solves the challenge of managing audience questions during seminars 
      REDIS_HOST="localhost"
      REDIS_PORT=6379
      MONGO_URI="your_mongodb_atlas_connection_string"
-     PRIVATE_IP="localhost"
+
+     # Optional
+     SERVER_ID="server-1"                     # Shown in /health and logs
+     ALLOWED_ORIGINS="http://localhost:3000"  # Comma-separated; unset = accept WebSockets from any origin
+     ENABLE_KAFKA=false                       # true routes writes through Kafka
+     KAFKA_BROKERS="localhost:9092"           # Defaults to $PRIVATE_IP:9092, then localhost:9092
      ```
    - Example `.env` for client:
      ```ini
@@ -100,7 +106,8 @@ Interactify solves the challenge of managing audience questions during seminars 
 3. **Start infrastructure services** (using Docker Compose recommended):
    ```bash
    cd server
-   docker-compose up -d
+   docker compose up -d                    # Redis only
+   docker compose --profile kafka up -d    # Redis, Zookeeper and Kafka (for ENABLE_KAFKA=true)
    ```
 
 4. **Install dependencies and start servers**:
@@ -133,29 +140,29 @@ docker run -d --name kafka -p 9092:9092 \
   -e KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1 \
   confluentinc/cp-kafka
 ```
-**NOTE: If you are running individual docker containers then you need to change the PRIVATE_IP in .env with your system's IP which you can get by running ifconfig for mac (IP under en0) or ipconfig for windows**
+**NOTE: If you are running individual docker containers then you need to set PRIVATE_IP (or KAFKA_BROKERS) in .env to your system's IP, which you can get by running ifconfig for mac (IP under en0) or ipconfig for windows**
+
+### Running Tests
+```bash
+cd server
+npm test
+```
+The tests run against an in-memory MongoDB (downloaded on first run), so no external services are needed.
 
 ## Deployment
-
-Run these docker containers first:
-- redis
-- zookeeper
-- kafka
 
 ### CI/CD Pipeline
 The project uses GitHub Actions for continuous integration and deployment:
 1. **Build Stage** (`build.yaml`):
-   - Runs on push to main branch
-   - Installs dependencies
-   - Runs type checking and tests
-   - Builds the application
+   - Runs on pull requests and pushes to main
+   - Builds and tests the server
+   - Builds (and type-checks) the client
 
 2. **Deploy Stage** (`deploy.yaml`):
-   - Executes only if build succeeds
-   - SSH into AWS EC2 instance
-   - Builds and pushes Docker images
-   - Pulls images from Docker Hub
-   - Deploys to production
+   - Runs on pushes to main that touch `server/`
+   - Builds and tests the server first; deployment only runs if that succeeds
+   - Builds and pushes the Docker image to Docker Hub
+   - SSHes into the AWS EC2 instance, pulls the image and restarts the container
 
 ![Image](https://github.com/user-attachments/assets/15969064-a942-4a55-b123-381616105984)
 
@@ -163,37 +170,13 @@ The project uses GitHub Actions for continuous integration and deployment:
 
 ## Actual Deployment
 
-### Lightweight Server Implementation (Without Kafka) 
+### Kafka Is Optional
 
-This is a simplified version of the main server implementation, specifically designed for deployment on resource-constrained environments like AWS EC2 t2.micro instances. This version removes the Kafka message broker to reduce memory usage while maintaining core functionality.
+There is a single server in `server/`. Kafka is off by default (`ENABLE_KAFKA=false`), which is how it runs on the AWS EC2 t2.micro instance:
 
-### Key Differences from Main Server
-
-1. **No Kafka Integration**: 
-   - Removed Kafka producer/consumer logic
-   - Direct database operations instead of event-driven updates
-   - Reduced memory footprint
-
-2. **Simplified Architecture**:
-   - Direct MongoDB operations
-   - WebSocket communication remains unchanged
-   - Redis pub/sub functionality remains intact
-
-
-## Features
-
-- Real-time WebSocket communication
-- Session management
-- Question handling (asking, voting, answering, starring)
-- Redis pub/sub for scaling
-- MongoDB persistence
-
-### Deployment Considerations
-
-This version is specifically optimized for:
-- AWS EC2 t2.micro instances
-- Limited memory environments (< 1GB RAM)
-- Production deployments where Kafka is not necessary
+- Writes go straight to MongoDB, and kafkajs is never loaded, keeping memory use low (< 1GB RAM)
+- WebSocket communication and Redis pub/sub work exactly as with Kafka enabled
+- Set `ENABLE_KAFKA=true` (and run Zookeeper and Kafka) to route writes through Kafka instead
 
 
 ## Scaling Test
@@ -218,7 +201,7 @@ NEXT_PUBLIC_WS_URL=ws://localhost:8081 PORT=3001 npm run dev
 This setup demonstrates:
 - Multiple server instances handling different client connections
 - Redis Pub/Sub ensuring synchronized state across servers
-- Kafka processing high volumes of interaction data
+- (With `ENABLE_KAFKA=true`) Kafka carrying writes from both servers
 
 ## Contributing
 

@@ -1,5 +1,5 @@
 import { WebSocket } from "ws"
-import { ClientConnection, Attendee } from '../../types'
+import { ClientConnection, Attendee, ClientRole } from '../../types'
 import { pubSubService } from '../../redis/pubSubService'
 
 class WebSocketService {
@@ -19,10 +19,11 @@ class WebSocketService {
     return client
   }
 
-  updateClientRoom(socket: WebSocket, roomId: string, attendee: Attendee): void {
+  updateClientRoom(socket: WebSocket, roomId: string, role: ClientRole, attendee?: Attendee): void {
     const client = this.clients.find((c) => c.socket === socket)
     if (client) {
       client.roomId = roomId
+      client.role = role
       client.attendee = attendee
     }
   }
@@ -31,6 +32,7 @@ class WebSocketService {
     const client = this.clients.find((c) => c.socket === socket)
     if (client) {
       client.roomId = undefined
+      client.role = undefined
       client.attendee = undefined
     }
   }
@@ -39,29 +41,31 @@ class WebSocketService {
     this.clients.forEach((client) => {
       if (client.roomId === roomId) {
         client.roomId = undefined
+        client.role = undefined
         client.attendee = undefined
       }
     })
   }
 
-  // UPDATED: Added skipRedis parameter to avoid infinite loops
-  broadcastToRoom(roomId: string, message: any, excludeSocket?: WebSocket, skipRedis: boolean = false): void {
-    // Send to local clients
+  // Send to this server's clients in the room and publish to Redis so the
+  // other server instances can send it to theirs.
+  broadcastToRoom(roomId: string, message: any, excludeSocket?: WebSocket): void {
+    this.deliverToRoom(roomId, message, excludeSocket)
+    pubSubService.publishToRoom(roomId, message)
+  }
+
+  // Send only to this server's clients in the room
+  deliverToRoom(roomId: string, message: any, excludeSocket?: WebSocket): void {
+    const data = JSON.stringify(message)
     this.clients.forEach((client) => {
       if (
         client.roomId === roomId &&
         client.socket !== excludeSocket &&
         client.socket.readyState === WebSocket.OPEN
       ) {
-        client.socket.send(JSON.stringify(message))
+        client.socket.send(data)
       }
     })
-
-    // If this is not from Redis (skipRedis = false), also publish to Redis
-    // so other servers can send to their clients
-    if (!skipRedis) {
-      pubSubService.publishToRoom(roomId, message)
-    }
   }
 
   sendToClient(socket: WebSocket, message: any): void {

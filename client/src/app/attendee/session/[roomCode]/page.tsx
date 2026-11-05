@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
@@ -29,7 +29,7 @@ import {
   User,
 } from "lucide-react";
 import { toast } from "sonner";
-import { useWebSocket } from "@/context/WebSocketContext";
+import { useWebSocket, useWebSocketMessages } from "@/context/WebSocketContext";
 import { motion, AnimatePresence } from "framer-motion";
 import React from "react";
 
@@ -37,7 +37,6 @@ interface Question {
   _id: string;
   questionText: string;
   upVotes: number;
-  downVotes: number;
   authorId: string;
   authorName: string;
   createdAt: string;
@@ -46,7 +45,7 @@ interface Question {
   upVotedBy: string[];
 }
 
-type SessionDataPayload = {
+type SessionPayload = {
   questions?: Question[];
   attendees?: { id: string; name: string }[];
   sessionName?: string;
@@ -123,10 +122,10 @@ const popUpVariants = {
 export default function AttendeeSession() {
   const params = useParams();
   const searchParams = useSearchParams();
-  const { sendMessage, lastMessage, isConnected, reconnect} = useWebSocket();
+  const { sendMessage, setJoinMessage, isConnected, reconnect } = useWebSocket();
   const router = useRouter();
 
-  const roomCode = params.roomCode as string;
+  const roomCode = (params.roomCode as string).toUpperCase();
   const attendeeId = searchParams.get("id");
   const attendeeName = searchParams.get("name") || "Anonymous";
 
@@ -135,288 +134,147 @@ export default function AttendeeSession() {
   const [attendeeCount, setAttendeeCount] = useState(0);
   const [sessionName, setSessionName] = useState("Loading session...");
   const [presenterName, setPresenterName] = useState("Presenter");
-  const [votedQuestions, setVotedQuestions] = useState<Set<string>>(new Set());
   const [sessionClosed, setSessionClosed] = useState(false);
-const [initialized, setInitialized] = useState(false);
 
-  // Use refs to track if we've already initialized
-  const hasInitialized = useRef(false);
-  const lastProcessedMessage = useRef<any>(null);
-  const hasJoined = useRef(false);
+  const applySession = useCallback((session: SessionPayload) => {
+    setSessionName(session.sessionName || "Session");
+    setPresenterName(session.owner || "Presenter");
+    setAttendeeCount(session.attendees?.length || 0);
+    setQuestions(session.questions || []);
+  }, []);
 
+  const endSession = useCallback(() => {
+    setJoinMessage(null);
+    setSessionClosed(true);
+    setTimeout(() => router.push("/"), 3000);
+  }, [router, setJoinMessage]);
 
-  // Memoize the message handler to prevent recreating it on each render
-  const handleMessage = useCallback(
-    (message: any) => {
-      // Prevent processing the same message twice
-      if (!message || message === lastProcessedMessage.current) {
-        return;
-      }
-      lastProcessedMessage.current = message;
+  useWebSocketMessages((message) => {
+    switch (message.type) {
+      case "sessionJoined":
+      case "sessionData":
+        applySession(message.payload.session);
+        break;
 
-      switch (message.type) {
-        case "sessionJoined":
-          if (!hasJoined.current) {
-            toast.success("Successfully joined the session!");
-            hasJoined.current = true;
-          }
-          break;
-
-        case "sessionData":
-          const session = message.payload.session;
-          setSessionName(session.sessionName || "Session");
-          setPresenterName(session.owner || "Presenter");
-          setAttendeeCount(session.attendees?.length || 0);
-          setQuestions(session.questions || []);
-          break;
-
-        case "attendeeJoined":
-          setAttendeeCount((prev) => {
-            const attendee = message.payload.attendee;
-            const attendeeName = attendee.name || attendee.id || attendee;
-            const newCount = message.payload.attendees?.length || prev + 1;
-            if (attendeeName !== attendeeName) {
-              toast(`${attendeeName} joined the session`);
-            }
-            return newCount;
-          });
-          break;
-
-        case "attendeeLeft":
-          setAttendeeCount((prev) => {
-            const attendee = message.payload.attendee;
-            const attendeeName = attendee.name || attendee.id || attendee;
-            const newCount =
-              message.payload.attendees?.length || Math.max(0, prev - 1);
-            if (attendeeName !== attendeeName) {
-              toast(`${attendeeName} left the session`);
-            }
-            return newCount;
-          });
-          break;
-
-        case "question":
-        case "questionAdded":
-          setQuestions((prev) => {
-            const newQuestion = message.payload.question || message.payload;
-            // Check if question already exists
-            const exists = prev.some(
-              (q) =>
-                q.questionText === newQuestion.questionText &&
-                q.authorId === newQuestion.authorId
-            );
-
-            if (!exists) {
-              if (newQuestion.authorId !== attendeeId) {
-                toast(`New question from ${newQuestion.authorName}`);
-              }
-              return [...prev, newQuestion];
-            }
-            return prev;
-          });
-          break;
-
-        case "vote":
-          setQuestions((prev) =>
-            prev.map((q) => {
-              if (q.questionText === message.payload.questionText) {
-                // Only update if votes actually changed
-                if (
-                  q.upVotes !== message.payload.upVotes ||
-                  q.downVotes !== message.payload.downVotes
-                ) {
-                  return {
-                    ...q,
-                    upVotes: message.payload.upVotes,
-                    downVotes: message.payload.downVotes,
-                  };
-                }
-              }
-              return q;
-            })
+      case "attendeeJoined":
+      case "attendeeLeft": {
+        const { attendee, attendees } = message.payload;
+        setAttendeeCount(attendees.length);
+        if (attendee.id !== attendeeId) {
+          toast(
+            `${attendee.name} ${
+              message.type === "attendeeJoined" ? "joined" : "left"
+            } the session`
           );
-          break;
-
-        case "markQuestion":
-          setQuestions((prev) =>
-            prev.map((q) => {
-              if (q.questionText === message.payload.questionText) {
-                const updates: Partial<Question> = {};
-
-                if (message.payload.answered !== undefined) {
-                  updates.answered = message.payload.answered;
-                }
-                if (message.payload.highlighted !== undefined) {
-                  updates.highlighted = message.payload.highlighted;
-                }
-
-                // Only update if something actually changed
-                if (
-                  Object.keys(updates).some(
-                    (key) =>
-                      q[key as keyof Question] !==
-                      updates[key as keyof Question]
-                  )
-                ) {
-                  return { ...q, ...updates };
-                }
-              }
-              return q;
-            })
-          );
-          break;
-
-        case "sessionClosed":
-          setSessionClosed(true);
-          toast.error("The session has been ended by the presenter");
-          setTimeout(() => router.push("/"), 3000);
-          break;
-
-        case "error":
-          toast.error(message.payload.message);
-          break;
-
-        case "questionUpdated":
-          setQuestions((prev) =>
-            prev.map((q) =>
-              q.questionText === (message.payload.question.questionText)
-                ? { ...q, ...message.payload.question }
-                : q
-            )
-          );
-          break;
-
-        default:
-          console.log("Unhandled message type:", message.type);
-      }
-    },
-    [attendeeName]
-  ); // Include attendeeName in dependencies
-
-
-    useEffect(() => {
-    if (isConnected && initialized) {
-      // When reconnected, request the latest session data
-      sendMessage({
-        type: "getSession",
-        payload: { roomId: roomCode },
-      });
-    }
-  }, [isConnected, initialized, roomCode, sendMessage]);
-  // Initialize session only once
-  useEffect(() => {
-    if (!hasInitialized.current && roomCode && attendeeName) {
-      hasInitialized.current = true;
-
-      const attendeeId = searchParams.get("id");
-      if (!attendeeId) {
-        toast.error("Invalid session ID");
-        router.push("/");
-        return;
-      }
-
-      // Join the session as attendee
-      sendMessage({
-        type: "join",
-        payload: {
-          roomId: roomCode,
-          attendee: {
-            id: attendeeId,
-            name: attendeeName
-          }
         }
-      });
+        break;
+      }
 
-      // Get initial session data
-      sendMessage({
-        type: "getSession",
-        payload: { roomId: roomCode }
-      });
+      case "questionAdded": {
+        const question: Question = message.payload.question;
+        setQuestions((prev) =>
+          prev.some((q) => q._id === question._id) ? prev : [...prev, question]
+        );
+        if (question.authorId === attendeeId) {
+          // Keep whatever the user typed since submitting
+          setNewQuestion((prev) =>
+            prev.trim() === question.questionText ? "" : prev
+          );
+          toast.success("Question submitted!");
+        } else {
+          toast(`New question from ${question.authorName}`);
+        }
+        break;
+      }
+
+      case "questionUpdated": {
+        const question: Question = message.payload.question;
+        setQuestions((prev) =>
+          prev.map((q) => (q._id === question._id ? question : q))
+        );
+        break;
+      }
+
+      case "sessionClosed":
+        toast.error("The session has been ended by the presenter");
+        endSession();
+        break;
+
+      case "error":
+        if (message.payload.code === "SESSION_CLOSED") {
+          endSession();
+        } else if (message.payload.code === "NOT_FOUND") {
+          toast.error("Session not found");
+          setJoinMessage(null);
+          router.push("/");
+        } else {
+          toast.error(message.payload.message);
+        }
+        break;
     }
-  }, [roomCode, attendeeName, sendMessage, searchParams, router]);
+  });
 
-  // Handle incoming messages
+  // Join once; the provider re-sends the join after every reconnect
   useEffect(() => {
-    if (lastMessage) {
-      handleMessage(lastMessage);
+    if (!attendeeId) {
+      toast.error("Invalid session link");
+      router.push("/");
+      return;
     }
-  }, [lastMessage, handleMessage]);
+
+    setJoinMessage({
+      type: "join",
+      payload: {
+        roomId: roomCode,
+        attendee: { id: attendeeId, name: attendeeName },
+      },
+    });
+
+    return () => setJoinMessage(null);
+  }, [roomCode, attendeeId, attendeeName, setJoinMessage, router]);
 
   const sortedQuestions = [...questions].sort((a, b) => {
     if (a.answered !== b.answered) return a.answered ? 1 : -1;
     if (a.highlighted !== b.highlighted) return a.highlighted ? -1 : 1;
-    return ((b.upVotes || 0) - (b.downVotes || 0)) - ((a.upVotes || 0) - (a.downVotes || 0));
+    if (b.upVotes !== a.upVotes) return (b.upVotes || 0) - (a.upVotes || 0);
+    return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
   });
 
   const handleSubmitQuestion = useCallback(
     (e: React.FormEvent) => {
       e.preventDefault();
-      if (!newQuestion.trim() || !attendeeId) return;
+      if (!newQuestion.trim()) return;
 
+      // The input is cleared once the server confirms the question
       sendMessage({
         type: "question",
         payload: {
           roomId: roomCode,
           questionText: newQuestion.trim(),
-          authorId: attendeeId,
-          authorName: attendeeName,
         },
       });
-
-      setNewQuestion("");
-      toast("Question submitted!");
     },
-    [newQuestion, roomCode, attendeeId, attendeeName, sendMessage]
+    [newQuestion, roomCode, sendMessage]
   );
 
   const handleVote = useCallback(
     (questionId: string) => {
-      const attendeeId = searchParams.get("id");
-
-      if (!attendeeId) {
-        toast.error("Invalid session ID");
-        router.push("/");
-        return;
-      }
-
       sendMessage({
         type: "vote",
-        payload: {
-          roomId: roomCode,
-          questionId: questionId,
-          voterId: attendeeId,
-        },
+        payload: { roomId: roomCode, questionId },
       });
     },
-    [roomCode, sendMessage, searchParams, router]
+    [roomCode, sendMessage]
   );
 
   const handleLeaveSession = useCallback(() => {
-    const attendeeId = searchParams.get("id");
-    if (!attendeeId) {
-      toast.error("Invalid session ID");
-      router.push("/");
-      return;
-    }
-
+    setJoinMessage(null);
     sendMessage({
       type: "leave",
-      payload: {
-        roomId: roomCode,
-        attendeeId: attendeeId,
-      },
+      payload: { roomId: roomCode },
     });
     router.push("/");
-  }, [roomCode, sendMessage, router, searchParams]);
-
-  useEffect(() => {
-    if (lastMessage?.type === "sessionJoined") {
-      sendMessage({
-        type: "getSession",
-        payload: { roomId: roomCode },
-      });
-    }
-  }, [lastMessage, roomCode, sendMessage]);
+  }, [roomCode, sendMessage, setJoinMessage, router]);
 
   if (!isConnected) {
     return (
@@ -631,7 +489,7 @@ const [initialized, setInitialized] = useState(false);
                                   <ThumbsUp className="h-5 w-5" />
                                 </MotionButton>
                                 <span className="mt-2 text-sm font-medium">
-                                  {(question.upVotes || 0) - (question.downVotes || 0)}
+                                  {question.upVotes || 0}
                                 </span>
                               </motion.div>
 

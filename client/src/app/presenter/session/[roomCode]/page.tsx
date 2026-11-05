@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useParams, useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
@@ -32,7 +32,8 @@ import {
   User,
 } from "lucide-react";
 import { toast } from "sonner";
-import { useWebSocket } from "@/context/WebSocketContext";
+import { useWebSocket, useWebSocketMessages } from "@/context/WebSocketContext";
+import { clearPresenterToken, getPresenterToken } from "@/utils/presenterToken";
 import { motion, AnimatePresence } from "framer-motion";
 import React from "react";
 
@@ -40,17 +41,22 @@ interface Question {
   _id: string;
   questionText: string;
   upVotes: number;
-  downVotes: number;
-  author: string;
-  authorName?: string;
+  authorId: string;
+  authorName: string;
   createdAt: string;
   answered: boolean;
   highlighted: boolean;
+  upVotedBy: string[];
 }
 
-type SessionDataPayload = {
+interface Attendee {
+  id: string;
+  name: string;
+}
+
+type SessionPayload = {
   questions?: Question[];
-  attendees?: { id: string; name: string }[];
+  attendees?: Attendee[];
   sessionName?: string;
   owner?: string;
 };
@@ -114,294 +120,156 @@ const statVariants = {
 export default function PresenterSession() {
   const params = useParams();
   const searchParams = useSearchParams();
-  const { sendMessage, lastMessage, isConnected, reconnect } = useWebSocket();
+  const { sendMessage, setJoinMessage, isConnected, reconnect } = useWebSocket();
   const router = useRouter();
 
-  const roomCode = params.roomCode as string;
-  const sessionName = searchParams.get("name") || "Untitled Session";
-  const presenterName = searchParams.get("presenter") || "Presenter";
+  const roomCode = (params.roomCode as string).toUpperCase();
 
+  const [sessionName, setSessionName] = useState(searchParams.get("name") || "Untitled Session");
+  const [presenterName, setPresenterName] = useState(searchParams.get("presenter") || "Presenter");
   const [shareLink, setShareLink] = useState("");
   const [questions, setQuestions] = useState<Question[]>([]);
-  const [attendees, setAttendees] = useState<string[]>([]);
+  const [attendees, setAttendees] = useState<Attendee[]>([]);
   const [activeTab, setActiveTab] = useState("all");
   const [showEndSessionDialog, setShowEndSessionDialog] = useState(false);
   const [sessionClosed, setSessionClosed] = useState(false);
-  const [initialized, setInitialized] = useState(false);
   const [showLeaveDialog, setShowLeaveDialog] = useState(false);
 
-  // Refs must be declared with other hooks
-  const hasInitialized = useRef(false);
-  const lastProcessedMessage = useRef<any>(null);
-  const shownQuestionToasts = useRef<Set<string>>(new Set());
+  const applySession = useCallback((session: SessionPayload) => {
+    if (session.sessionName) setSessionName(session.sessionName);
+    if (session.owner) setPresenterName(session.owner);
+    setQuestions(session.questions || []);
+    setAttendees(session.attendees || []);
+  }, []);
 
-  // Memoize the message handler to prevent recreating it on each render
-  const handleMessage = useCallback((message: any) => {
-    // Prevent processing the same message twice
-    if (!message || message === lastProcessedMessage.current) {
-      return;
-    }
-    lastProcessedMessage.current = message;
+  const goHome = useCallback(() => {
+    setJoinMessage(null);
+    router.push("/");
+  }, [router, setJoinMessage]);
 
+  useWebSocketMessages((message) => {
     switch (message.type) {
       case "sessionJoined":
-        toast.success("Successfully joined the session!");
-        break;
-
       case "sessionData":
-        const session = message.payload.session;
-        setQuestions(session.questions || []);
-        setAttendees((session.attendees || []).map((a: any) => a.name));
+        applySession(message.payload.session);
         break;
 
       case "attendeeJoined":
-        setAttendees((prev) => {
-          const attendee = message.payload.attendee;
-          const attendeeName = attendee.name;
-          const newAttendees = message.payload.attendees.map(
-            (a: any) => a.name
-          );
-          // Show toast only if attendeeName is in newAttendees but not in prev
-          if (
-            !prev.includes(attendeeName) &&
-            newAttendees.includes(attendeeName)
-          ) {
-            toast(`${attendeeName} joined the session`);
-          }
-          return newAttendees;
-        });
-        break;
-
-      case "attendeeLeft":
-        setAttendees((prev) => {
-          const attendee = message.payload.attendee;
-          const attendeeName = attendee.name;
-          const newAttendees = message.payload.attendees.map(
-            (a: any) => a.name
-          );
-          // Show toast only if attendeeName is in prev but not in newAttendees
-          if (
-            prev.includes(attendeeName) &&
-            !newAttendees.includes(attendeeName)
-          ) {
-            toast(`${attendeeName} left the session`);
-          }
-          return newAttendees;
-        });
-        break;
-
-      case "question":
-      case "questionAdded":
-        setQuestions((prev) => {
-          const newQuestion = message.payload.question || message.payload;
-          const uniqueKey = `${newQuestion.questionText}|${
-            newQuestion.author || newQuestion.authorName || "Anonymous"
-          }`;
-          if (!shownQuestionToasts.current.has(uniqueKey)) {
-            shownQuestionToasts.current.add(uniqueKey);
-            const author =
-              newQuestion.author || newQuestion.authorName || "Anonymous";
-            toast(`New question from ${author}`);
-          }
-          const exists = prev.some(
-            (q) =>
-              q.questionText === newQuestion.questionText &&
-              (q.author === newQuestion.author ||
-                q.authorName === newQuestion.authorName)
-          );
-          if (!exists) {
-            return [...prev, newQuestion];
-          }
-          return prev;
-        });
-        break;
-
-      case "vote":
-        setQuestions((prev) =>
-          prev.map((q) => {
-            if (q.questionText === message.payload.questionText) {
-              // Only update if votes actually changed
-              if (
-                q.upVotes !== message.payload.upVotes ||
-                q.downVotes !== message.payload.downVotes
-              ) {
-                return {
-                  ...q,
-                  upVotes: message.payload.upVotes,
-                  downVotes: message.payload.downVotes,
-                };
-              }
-            }
-            return q;
-          })
+      case "attendeeLeft": {
+        const { attendee, attendees: nextAttendees } = message.payload;
+        setAttendees(nextAttendees);
+        toast(
+          `${attendee.name} ${
+            message.type === "attendeeJoined" ? "joined" : "left"
+          } the session`
         );
         break;
+      }
 
-      case "markQuestion":
+      case "questionAdded": {
+        const question: Question = message.payload.question;
         setQuestions((prev) =>
-          prev.map((q) => {
-            if (q._id === message.payload.questionId) {
-              const updates: Partial<Question> = {};
+          prev.some((q) => q._id === question._id) ? prev : [...prev, question]
+        );
+        toast(`New question from ${question.authorName}`);
+        break;
+      }
 
-              if (message.payload.answered !== undefined) {
-                updates.answered = message.payload.answered;
-              }
-              if (message.payload.highlighted !== undefined) {
-                updates.highlighted = message.payload.highlighted;
-              }
-
-              // Only update if something actually changed
-              if (
-                Object.keys(updates).some(
-                  (key) =>
-                    q[key as keyof Question] !== updates[key as keyof Question]
-                )
-              ) {
-                return { ...q, ...updates };
-              }
-            }
-            return q;
-          })
+      case "questionUpdated": {
+        const question: Question = message.payload.question;
+        setQuestions((prev) =>
+          prev.map((q) => (q._id === question._id ? question : q))
         );
         break;
+      }
 
       case "sessionClosed":
-        setSessionClosed(true);
-        toast.error("The session has been ended by the presenter");
+        clearPresenterToken(roomCode);
+        toast.success("Session ended successfully");
+        goHome();
         break;
 
       case "error":
-        toast.error(message.payload.message);
+        if (message.payload.code === "SESSION_CLOSED") {
+          clearPresenterToken(roomCode);
+          setJoinMessage(null);
+          setSessionClosed(true);
+        } else if (message.payload.code === "NOT_FOUND" || message.payload.code === "FORBIDDEN") {
+          toast.error(message.payload.message);
+          goHome();
+        } else {
+          toast.error(message.payload.message);
+        }
         break;
-
-      case "questionUpdated":
-        setQuestions((prev) =>
-          prev.map((q) =>
-            q.questionText === message.payload.question.questionText
-              ? { ...q, ...message.payload.question }
-              : q
-          )
-        );
-        break;
-
-      default:
-        console.log("Unhandled message type:", message.type);
     }
-  }, []); // Empty dependency array since we're using functional updates
+  });
+
+  // Join as presenter once; the provider re-sends the join after every reconnect
+  useEffect(() => {
+    setShareLink(`${window.location.origin}/attendee/join?code=${roomCode}`);
+
+    const ownerToken = getPresenterToken(roomCode);
+    if (!ownerToken) {
+      toast.error("Presenter controls are only available in the browser that created this session");
+      router.push("/");
+      return;
+    }
+
+    setJoinMessage({
+      type: "join",
+      payload: { roomId: roomCode, ownerToken },
+    });
+
+    return () => setJoinMessage(null);
+  }, [roomCode, setJoinMessage, router]);
 
   const copyRoomCode = useCallback(() => {
     navigator.clipboard.writeText(roomCode);
     toast("Room code copied!");
   }, [roomCode]);
 
-  const toggleAnswered = useCallback(
-    (questionId: string) => {
-      setQuestions((prev) => {
-        const question = prev.find((q) => q._id === questionId);
-        if (!question) return prev;
-        sendMessage({
-          type: "markQuestion",
-          payload: {
-            roomId: roomCode,
-            questionId: questionId,
-            action: question.answered ? "unanswered" : "answered",
-            userId: presenterName,
-          },
-        });
-        return prev;
+  const markQuestion = useCallback(
+    (questionId: string, action: "answered" | "unanswered" | "highlighted" | "unhighlighted") => {
+      sendMessage({
+        type: "markQuestion",
+        payload: { roomId: roomCode, questionId, action },
       });
     },
-    [roomCode, presenterName, sendMessage]
+    [roomCode, sendMessage]
+  );
+
+  const toggleAnswered = useCallback(
+    (questionId: string) => {
+      const question = questions.find((q) => q._id === questionId);
+      if (question) markQuestion(questionId, question.answered ? "unanswered" : "answered");
+    },
+    [questions, markQuestion]
   );
 
   const toggleHighlighted = useCallback(
     (questionId: string) => {
-      setQuestions((prev) => {
-        const question = prev.find((q) => q._id === questionId);
-        if (!question) return prev;
-        sendMessage({
-          type: "markQuestion",
-          payload: {
-            roomId: roomCode,
-            questionId: questionId,
-            action: question.highlighted ? "unhighlighted" : "highlighted",
-            userId: presenterName,
-          },
-        });
-        return prev;
-      });
+      const question = questions.find((q) => q._id === questionId);
+      if (question) markQuestion(questionId, question.highlighted ? "unhighlighted" : "highlighted");
     },
-    [roomCode, presenterName, sendMessage]
+    [questions, markQuestion]
   );
 
+  // Navigation happens when the server confirms with "sessionClosed"
   const handleEndSession = useCallback(() => {
     sendMessage({
       type: "close",
-      payload: {
-        roomId: roomCode,
-        ownerId: presenterName,
-      },
+      payload: { roomId: roomCode },
     });
-    toast.success("Session ended successfully");
-    router.push("/");
-  }, [roomCode, presenterName, sendMessage, router]);
+  }, [roomCode, sendMessage]);
 
-  useEffect(() => {
-    if (isConnected && initialized) {
-      // When reconnected, request the latest session data
-      sendMessage({
-        type: "getSession",
-        payload: { roomId: roomCode },
-      });
-    }
-  }, [isConnected, initialized, roomCode, sendMessage]);
-
-  // Modify your initialization effect
-  useEffect(() => {
-    if (roomCode && presenterName) {
-      const link = `${window.location.origin}/attendee/join?code=${roomCode}`;
-      setShareLink(link);
-      sendMessage({
-        type: "getSession",
-        payload: { roomId: roomCode },
-      });
-    }
-  }, [roomCode, presenterName, sendMessage]);
-
-  // Initialize session only once
-  useEffect(() => {
-    if (!hasInitialized.current) {
-      hasInitialized.current = true;
-
-      const link = `${window.location.origin}/attendee/join?code=${roomCode}`;
-      setShareLink(link);
-
-      // Join the session as presenter
-      sendMessage({
-        type: "join",
-        payload: {
-          roomId: roomCode,
-          attendee: {
-            id: presenterName,
-            name: presenterName,
-          },
-        },
-      });
-
-      // Get initial session data
-      sendMessage({
-        type: "getSession",
-        payload: { roomId: roomCode },
-      });
-    }
-  }, [roomCode, presenterName, sendMessage]);
-
-  // Handle incoming messages
-  useEffect(() => {
-    if (lastMessage) {
-      handleMessage(lastMessage);
-    }
-  }, [lastMessage, handleMessage]);
+  const handleLeaveSession = useCallback(() => {
+    setShowLeaveDialog(false);
+    sendMessage({
+      type: "leave",
+      payload: { roomId: roomCode },
+    });
+    goHome();
+  }, [roomCode, sendMessage, goHome]);
 
   // Calculate filtered questions
   const filteredQuestions = questions
@@ -418,35 +286,17 @@ export default function PresenterSession() {
         return a.highlighted ? -1 : 1;
       }
 
-      // Then sort by vote score (upVotes - downVotes)
-      const aScore = (a.upVotes || 0) - (a.downVotes || 0);
-      const bScore = (b.upVotes || 0) - (b.downVotes || 0);
-
-      // If scores are equal, newer questions come first
-      if (bScore === aScore) {
+      // Then by votes; if equal, newer questions come first
+      if (b.upVotes === a.upVotes) {
         return (
           new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
         );
       }
 
-      return bScore - aScore;
+      return (b.upVotes || 0) - (a.upVotes || 0);
     });
 
-  const totalVotes = questions.reduce(
-    (acc, q) => acc + ((q.upVotes || 0) - (q.downVotes || 0)),
-    0
-  );
-
-  // Always fetch session data on page load/refresh for presenter
-  useEffect(() => {
-    if (roomCode) {
-      sendMessage({
-        type: "getSession",
-        payload: { roomId: roomCode },
-      });
-    }
-  }, [roomCode, sendMessage]);
-
+  const totalVotes = questions.reduce((acc, q) => acc + (q.upVotes || 0), 0);
   // MOVE ALL CONDITIONAL RENDERING TO THE END, AFTER ALL HOOKS
   if (!isConnected) {
     return (
@@ -729,20 +579,7 @@ export default function PresenterSession() {
             <AlertDialogCancel onClick={() => setShowLeaveDialog(false)}>
               Cancel
             </AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => {
-                setShowLeaveDialog(false);
-                // Send leave message and redirect
-                sendMessage({
-                  type: "leave",
-                  payload: {
-                    roomId: roomCode,
-                    attendeeId: presenterName,
-                  },
-                });
-                router.push("/");
-              }}
-            >
+            <AlertDialogAction onClick={handleLeaveSession}>
               Leave
             </AlertDialogAction>
           </AlertDialogFooter>
@@ -754,12 +591,11 @@ export default function PresenterSession() {
           <AlertDialogHeader>
             <AlertDialogTitle>Session Ended</AlertDialogTitle>
             <AlertDialogDescription>
-              The presenter has ended this session. You will be redirected to
-              the home page.
+              This session has already ended.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogAction onClick={() => router.push("/")}>
+            <AlertDialogAction onClick={goHome}>
               Go Home
             </AlertDialogAction>
           </AlertDialogFooter>
@@ -823,7 +659,7 @@ function QuestionsList({
                       variant="outline"
                       className="flex h-12 w-12 items-center justify-center rounded-full text-lg font-bold bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400"
                     >
-                      {(question.upVotes || 0) - (question.downVotes || 0)}
+                      {question.upVotes || 0}
                     </Badge>
                     <span className="mt-1 text-xs text-gray-500">votes</span>
                   </motion.div>
