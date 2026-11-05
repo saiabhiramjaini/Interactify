@@ -26,7 +26,7 @@ pkg install git nodejs redis openssh cloudflared
 npm install -g pm2
 ```
 
-The repo must be cloned at `~/Interactify` (with `origin` pointing to GitHub), and the server's
+The repo must be cloned at `~/interactify` (with `origin` pointing to GitHub), and the server's
 `.env` must exist. On the first deploy, `deploy.sh` copies `server-without-kafka/.env` to
 `server/.env` automatically, and stops any old PM2 process running from `server-without-kafka/`.
 
@@ -108,7 +108,7 @@ gh secret set CF_ACCESS_CLIENT_SECRET --body "..."
 
    ```bash
    mkdir -p ~/.termux/boot
-   cp ~/Interactify/deploy/termux-boot.sh ~/.termux/boot/start-interactify
+   cp ~/interactify/deploy/termux-boot.sh ~/.termux/boot/start-interactify
    chmod +x ~/.termux/boot/start-interactify
    ```
 
