@@ -76,12 +76,17 @@ rm -rf dist.prev
 mv "$STAGING/dist" dist
 rm -rf "$STAGING" "$ARTIFACT"
 
-# Stop servers still running from the old server-without-kafka/ folder; they hold the same port
+# Stop servers still running from the old server-without-kafka/ folder; they hold the same port.
+# Matches on the script too: other processes (e.g. cloudflare-tunnel) may share that folder.
 pm2 jlist | node -e '
   let data = "";
   process.stdin.on("data", (chunk) => (data += chunk)).on("end", () => {
     for (const proc of JSON.parse(data || "[]")) {
-      if ((proc.pm2_env.pm_cwd || "").endsWith("/server-without-kafka")) console.log(proc.name);
+      const env = proc.pm2_env || {};
+      const command = [env.pm_exec_path, ...(env.args || [])].join(" ");
+      if ((env.pm_cwd || "").endsWith("/server-without-kafka") && command.includes("dist/index.js")) {
+        console.log(proc.name);
+      }
     }
   });
 ' | while read -r old; do
