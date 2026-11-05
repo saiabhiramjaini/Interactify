@@ -159,10 +159,12 @@ The project uses GitHub Actions for continuous integration and deployment:
    - Builds (and type-checks) the client
 
 2. **Deploy Stage** (`deploy.yaml`):
-   - Runs on pushes to main that touch `server/`
+   - Runs on pushes to main that touch `server/` or `deploy/` (or manually from the Actions tab)
    - Builds and tests the server first; deployment only runs if that succeeds
-   - Builds and pushes the Docker image to Docker Hub
-   - SSHes into the AWS EC2 instance, pulls the image and restarts the container
+   - Copies the compiled build to the phone server through the Cloudflare tunnel
+   - Runs `deploy/deploy.sh` on the phone: updates the code, installs production dependencies, restarts the server with PM2, and rolls back if `/health` fails
+
+   See [`deploy/README.md`](deploy/README.md) for the one-time setup.
 
 ![Image](https://github.com/user-attachments/assets/15969064-a942-4a55-b123-381616105984)
 
@@ -172,9 +174,11 @@ The project uses GitHub Actions for continuous integration and deployment:
 
 ### Kafka Is Optional
 
-There is a single server in `server/`. Kafka is off by default (`ENABLE_KAFKA=false`), which is how it runs on the AWS EC2 t2.micro instance:
+The server runs on an old Samsung Galaxy J6 in Termux, managed by PM2 and exposed through a Cloudflare Tunnel, instead of AWS EC2. The `Dockerfile` still works for container hosts.
 
-- Writes go straight to MongoDB, and kafkajs is never loaded, keeping memory use low (< 1GB RAM)
+There is a single server in `server/`. Kafka is off by default (`ENABLE_KAFKA=false`), which is how it runs on the phone:
+
+- Writes go straight to MongoDB, and kafkajs is never loaded, keeping memory use low
 - WebSocket communication and Redis pub/sub work exactly as with Kafka enabled
 - Set `ENABLE_KAFKA=true` (and run Zookeeper and Kafka) to route writes through Kafka instead
 

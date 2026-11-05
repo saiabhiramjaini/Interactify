@@ -1,4 +1,4 @@
-name: Build and deploy on Docker Hub
+name: Deploy server to phone
 
 on:
   push:
@@ -6,13 +6,18 @@ on:
       - main
     paths:
       - 'server/**'
+      - 'deploy/**'
+      - '.github/workflows/deploy.yaml'
+  workflow_dispatch:
+
+# Never run two deploys against the phone at once
+concurrency:
+  group: deploy-phone
+  cancel-in-progress: false
 
 jobs:
-  test:
+  deploy:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ./server
 
     steps:
       - uses: actions/checkout@v4
@@ -21,58 +26,61 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: server/package-lock.json
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci
+        working-directory: ./server
 
       - name: Build
         run: npm run build
+        working-directory: ./server
 
+      # Nothing reaches the phone unless the tests pass
       - name: Test
         run: npm test
+        working-directory: ./server
 
-  build-and-push:
-    # Never deploy a server that fails to build or test
-    needs: test
-    runs-on: ubuntu-latest
+      # The phone runs this exact build; it only installs production dependencies
+      - name: Package build
+        run: tar czf "$RUNNER_TEMP/dist.tgz" -C server dist
 
-    steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - name: Install cloudflared
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/cloudflared" \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+          sudo install -m 755 "$RUNNER_TEMP/cloudflared" /usr/local/bin/cloudflared
+          cloudflared --version
 
-      - name: login to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
+      # SSH reaches the phone through the Cloudflare tunnel, authenticated by an
+      # Access service token (see deploy/README.md for the one-time setup)
+      - name: Configure SSH
+        env:
+          PHONE_SSH_HOST: ${{ secrets.PHONE_SSH_HOST }}
+          PHONE_SSH_USER: ${{ secrets.PHONE_SSH_USER }}
+          PHONE_SSH_KEY: ${{ secrets.PHONE_SSH_KEY }}
+          PHONE_SSH_KNOWN_HOSTS: ${{ secrets.PHONE_SSH_KNOWN_HOSTS }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$PHONE_SSH_KEY" > ~/.ssh/phone_key
+          chmod 600 ~/.ssh/phone_key
+          printf '%s\n' "$PHONE_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          cat > ~/.ssh/config <<EOF
+          Host phone
+            HostName $PHONE_SSH_HOST
+            User $PHONE_SSH_USER
+            IdentityFile ~/.ssh/phone_key
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+            ServerAliveInterval 30
+            ProxyCommand cloudflared access ssh --hostname %h --id "\$CF_ACCESS_CLIENT_ID" --secret "\$CF_ACCESS_CLIENT_SECRET"
+          EOF
 
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v6
-        with:
-          context: ./server
-          file: ./server/Dockerfile
-          push: true
-          tags: saiabhiramjaini/interactify-server:latest
-
-      - name: verify Docker image
-        run: docker pull saiabhiramjaini/interactify-server:latest
-
-      # Kafka stays disabled on the t2.micro (ENABLE_KAFKA defaults to false).
-      # ALLOWED_ORIGINS may be left unset to accept WebSocket connections from any origin.
-      - name: Deploy to EC2
-        uses: appleboy/ssh-action@master
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USERNAME }}
-          key: ${{ secrets.SSH_KEY }}
-          script: |
-            sudo docker pull saiabhiramjaini/interactify-server:latest
-            sudo docker stop interactify-server || true
-            sudo docker rm interactify-server || true
-            sudo docker run -d -p 8000:8000 \
-              -e PORT=${{ secrets.ENV_PORT }} \
-              -e MONGO_URI=${{ secrets.ENV_MONGO_URI }} \
-              -e REDIS_HOST=${{ secrets.ENV_REDIS_HOST }} \
-              -e REDIS_PORT=${{ secrets.ENV_REDIS_PORT }} \
-              -e ALLOWED_ORIGINS="${{ secrets.ENV_ALLOWED_ORIGINS }}" \
-              --name interactify-server saiabhiramjaini/interactify-server:latest
+      - name: Deploy
+        env:
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+        run: |
+          scp -q "$RUNNER_TEMP/dist.tgz" phone:interactify-dist.tgz
+          ssh phone 'bash -s' -- "$GITHUB_SHA" < deploy/deploy.sh
