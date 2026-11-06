@@ -167,9 +167,26 @@ The tests run against an in-memory MongoDB (downloaded on first run), so no exte
 
 ## Deployment
 
+Interactify has been deployed two ways. In both, the client is hosted on Vercel and the data lives in MongoDB Atlas; only the server's host changed.
+
+| | [Android phone](#android-phone-current) (current) | [AWS EC2](#aws-ec2-original) (original) |
+| --- | --- | --- |
+| Server host | Samsung Galaxy J6 in Termux | EC2 t2.micro |
+| Reaching the server | Cloudflare Tunnel, opened from the phone | nginx reverse proxy |
+| Shipping a build | CI builds `dist/`, copies it over SSH through Cloudflare Access | CI pushes an image to Docker Hub, EC2 pulls it |
+| Processes | PM2 (server, cloudflared) and a native redis-server | Docker containers |
+| Writes to MongoDB | Direct (`ENABLE_KAFKA=false`) | Through Kafka |
+| After a deploy | `/health` check, automatic rollback | None |
+
+### Android Phone (current)
+
+![Deployment on an Android phone: GitHub Actions builds the server and sends it through Cloudflare to a Samsung Galaxy J6 running Termux, where PM2 runs the WebSocket server and cloudflared](docs/deployment-phone.svg)
+
 The server runs on an old Samsung Galaxy J6 in Termux. PM2 keeps it running, and a Cloudflare Tunnel exposes it to the internet, so the phone needs no public IP or open ports. The client is hosted on Vercel.
 
-### CI/CD Pipeline
+#### CI/CD pipeline
+
+![CI/CD for the phone: build.yaml checks pull requests and pushes, while deploy.yaml builds and tests the server, then sends it over SSH through Cloudflare to the phone, where deploy.sh restarts PM2 and rolls back if /health fails](docs/deploy-pipeline-phone.svg)
 
 GitHub Actions runs two workflows:
 
@@ -188,27 +205,30 @@ GitHub Actions runs two workflows:
      - swaps in the new build and restarts the server with PM2
      - waits for `/health`, and restores the previous build if it doesn't become healthy within 30 seconds
 
-```mermaid
-flowchart TD
-    push["Push to main"] --> build["build.yaml<br/>build + test server and client"]
-    push -- "server/ or deploy/ changed" --> ci["deploy.yaml<br/>npm ci → build → test"]
-    ci -- "tests fail" --> stop(["Deploy stops"])
-    ci -- "tests pass" --> pkg["Package server/dist"]
-    pkg -- "scp + ssh via<br/>Cloudflare tunnel" --> sh
-
-    subgraph phone["Phone (Termux)"]
-        sh["deploy/deploy.sh"] --> git["git fast-forward"]
-        git --> deps["npm ci --omit=dev"]
-        deps --> restart["Unpack dist, pm2 restart"]
-        restart --> health{"/health OK<br/>within 30s?"}
-        health -- yes --> save(["pm2 save · deployed"])
-        health -- no --> rollback(["Restore previous build"])
-    end
-```
+The two workflows don't wait for each other: `deploy.yaml` runs its own build and tests.
 
 The phone never builds anything: its 32-bit Android userspace can't install the build and test tooling, and building in CI means the phone runs exactly what passed the tests.
 
 See [`deploy/README.md`](deploy/README.md) for the one-time setup: phone packages, the Cloudflare tunnel and Access policy, the deploy key, GitHub secrets, and starting everything on boot with Termux:Boot.
+
+### AWS EC2 (original)
+
+![Deployment on AWS EC2: GitHub Actions pushes a Docker image to Docker Hub and SSHes into EC2, which pulls and runs it behind nginx alongside Kafka, Zookeeper and Redis containers](docs/deployment-aws-ec2.svg)
+
+Before the phone, the server ran on an EC2 t2.micro as a set of Docker containers:
+
+- `deploy.yaml` tested the server, built the `server/Dockerfile` image, and pushed it to Docker Hub as `saiabhiramjaini/interactify-server:latest`
+- It then connected to the instance over SSH (`appleboy/ssh-action`) and ran `docker pull`, `docker stop`, `docker rm` and `docker run`, passing the server's environment from GitHub secrets
+- nginx on the instance proxied WebSocket traffic to the server container on port 8080
+- Redis (`redis/redis-stack`, with RedisInsight on port 8001), Kafka and Zookeeper ran as long-lived containers beside it; only the server container was replaced on each deploy
+
+#### CI/CD pipeline
+
+![CI/CD for AWS EC2: deploy.yaml's test job had to pass before build-and-push built the Docker image, pushed it to Docker Hub and SSHed into EC2 to replace the server container](docs/deploy-pipeline-aws-ec2.svg)
+
+`deploy.yaml` had two jobs. `test` built and tested the server, and `build-and-push` ran only after it passed (`needs: test`), so a failing build never reached Docker Hub or EC2. `build.yaml` checked pull requests and pushes the same way it does today. Once the new container started there was no health check, so a broken image stayed live until the next deploy.
+
+That workflow was replaced by the phone deploy. The last EC2 version is in the git history: `git show 651cf30:.github/workflows/deploy.yaml`.
 
 ### Kafka Is Optional
 
