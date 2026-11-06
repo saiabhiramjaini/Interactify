@@ -16,9 +16,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ArrowLeft, LogIn, Hash, User } from "lucide-react";
 import { toast } from "sonner";
-import { useWebSocket } from "@/context/WebSocketContext";
+import { useWebSocket, useWebSocketMessages } from "@/context/WebSocketContext";
 import { generateAttendeeId } from "@/utils/generateAttendeeId";
-import { randomName } from "@/utils/generateAttendeeName";
+import { generateAttendeeName } from "@/utils/generateAttendeeName";
 import { motion } from "framer-motion";
 
 function JoinSessionContent() {
@@ -28,40 +28,42 @@ function JoinSessionContent() {
   const [attendeeName, setAttendeeName] = useState("");
   const [isJoining, setIsJoining] = useState(false);
   const [attendeeId, setAttendeeId] = useState("");
-  const { sendMessage, lastMessage } = useWebSocket();
+  const { sendMessage } = useWebSocket();
 
   useEffect(() => {
     const codeFromUrl = searchParams.get("code");
     if (codeFromUrl) {
-      setRoomCode(codeFromUrl);
+      setRoomCode(codeFromUrl.toUpperCase());
     }
-    setAttendeeName(randomName);
+    setAttendeeName(generateAttendeeName());
     setAttendeeId(generateAttendeeId());
   }, [searchParams]);
 
-  useEffect(() => {
-    if (!lastMessage) return;
+  useWebSocketMessages((message) => {
+    if (!isJoining) return;
 
-    switch (lastMessage.type) {
-      case "sessionJoined":
+    switch (message.type) {
+      case "sessionJoined": {
+        const { session } = message.payload;
         router.push(
-          `/attendee/session/${roomCode}?name=${encodeURIComponent(
-            attendeeName
+          `/attendee/session/${session.roomId}?name=${encodeURIComponent(
+            attendeeName.trim()
           )}&id=${attendeeId}`
         );
         break;
+      }
 
       case "error":
-        toast.error(lastMessage.payload.message);
+        toast.error(message.payload.message);
         setIsJoining(false);
         break;
     }
-  }, [lastMessage, router, roomCode, attendeeName, attendeeId]);
+  });
 
   const handleJoinSession = (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!roomCode || !attendeeName) {
+    if (!roomCode.trim() || !attendeeName.trim()) {
       toast.error("Please enter both room code and your name");
       return;
     }
@@ -71,10 +73,10 @@ function JoinSessionContent() {
     sendMessage({
       type: "join",
       payload: {
-        roomId: roomCode,
+        roomId: roomCode.trim(),
         attendee: {
           id: attendeeId,
-          name: attendeeName || randomName,
+          name: attendeeName.trim(),
         },
       },
     });

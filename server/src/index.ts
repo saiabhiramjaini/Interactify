@@ -1,88 +1,98 @@
 import express from 'express'
 import http from 'http'
 import cors from 'cors'
+import mongoose from 'mongoose'
+import { config } from './config'
 import { createWebSocketServer } from './ws'
 import connectDB from './db/connect'
-import { kafkaProducer, kafkaConsumer, initializeKafka } from './kafka/index'
+import { setWriter } from './db/writer'
+import { connectRedis } from './redis'
+import { pubSubService } from './redis/pubSubService'
 
 const app = express()
 const server = http.createServer(app)
-
 const wss = createWebSocketServer()
+
+const isOriginAllowed = (origin: string | undefined): boolean =>
+  config.allowedOrigins.length === 0 || (!!origin && config.allowedOrigins.includes(origin))
 
 // Handle HTTP to WebSocket upgrade
 server.on('upgrade', (request, socket, head) => {
-  // You can add authentication/validation here if needed
-  console.log('Upgrading to WebSocket connection')
-  
-  wss.handleUpgrade(request, socket, head, (socket) => {
-    wss.emit('connection', socket, request)
+  if (!isOriginAllowed(request.headers.origin)) {
+    socket.write('HTTP/1.1 403 Forbidden\r\n\r\n')
+    socket.destroy()
+    return
+  }
+
+  wss.handleUpgrade(request, socket, head, (ws) => {
+    wss.emit('connection', ws, request)
   })
 })
 
 // Express middleware
 app.use(express.json())
 app.use(cors({
-  origin: 'http://localhost:3000',
+  origin: config.allowedOrigins.length ? config.allowedOrigins : 'http://localhost:3000',
   credentials: true,
 }))
 
-// Get port from environment variable or default to 8080
-const PORT = process.env.PORT || 8080
-const SERVER_ID = process.env.SERVER_ID || 'server-1'
-
 // Health check endpoint
 app.get('/health', (req, res) => {
-  res.status(200).json({ 
+  res.status(200).json({
     status: 'healthy',
-    websocket: `ws://localhost:${PORT}`,
-    serverId: SERVER_ID,
-    port: PORT
+    serverId: config.serverId,
+    port: config.port,
+    kafka: config.enableKafka,
   })
 })
 
-// Initialize services
-async function initializeServices() {
-  try {
-    // Connect to MongoDB
-    await connectDB();
-    console.log('MongoDB connected successfully');
-    
-    // Initialize Kafka
-    await initializeKafka();
-    console.log('Kafka initialized successfully');
-    
-    // Connect Kafka producer and consumer
-    if (!kafkaProducer || !kafkaConsumer) {
-      throw new Error('Kafka producer or consumer not properly initialized');
-    }
+let stopKafka: (() => Promise<void>) | undefined
 
-    
-    await kafkaProducer.connect();
-    await kafkaConsumer.connect();
-    await kafkaConsumer.start();
-    console.log('Kafka producer and consumer connected successfully');
-    
-    console.log('All services initialized successfully');
-  } catch (error) {
-    console.error('Error initializing services:', error);
-    process.exit(1);
+// Connect every dependency before accepting connections
+async function initializeServices() {
+  await connectDB()
+  await connectRedis()
+  await pubSubService.initializeSubscriber()
+
+  if (config.enableKafka) {
+    // Loaded lazily so kafkajs stays out of memory when Kafka is disabled
+    const { startKafka } = await import('./kafka')
+    const kafka = await startKafka()
+    setWriter(kafka.writer)
+    stopKafka = kafka.stop
   }
 }
 
-// Start the server
-server.listen(PORT, () => {
-  console.log(`🚀 Server ${SERVER_ID} starting...`)
-  console.log(`HTTP server is running on http://localhost:${PORT}`)
-  console.log(`WebSocket server is running on ws://localhost:${PORT}`)
-  
-  initializeServices();
-})
+initializeServices()
+  .then(() => {
+    server.listen(config.port, () => {
+      console.log(`🚀 Server ${config.serverId} running on port ${config.port} (Kafka ${config.enableKafka ? 'enabled' : 'disabled'})`)
+    })
+  })
+  .catch((error) => {
+    console.error('Error initializing services:', error)
+    process.exit(1)
+  })
 
-// Handle graceful shutdown
-process.on('SIGTERM', async () => {
-  console.log('SIGTERM received. Shutting down gracefully...');
-  if (kafkaProducer) await kafkaProducer.disconnect();
-  if (kafkaConsumer) await kafkaConsumer.disconnect();
-  process.exit(0);
-});
+let shuttingDown = false
+
+async function shutdown(signal: string) {
+  if (shuttingDown) return
+  shuttingDown = true
+  console.log(`${signal} received. Shutting down gracefully...`)
+
+  try {
+    wss.clients.forEach((client) => client.close(1001, 'Server shutting down'))
+    wss.close()
+    server.close()
+    if (stopKafka) await stopKafka()
+    pubSubService.disconnect()
+    await mongoose.disconnect()
+  } catch (error) {
+    console.error('Error during shutdown:', error)
+  }
+  process.exit(0)
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'))
+process.on('SIGINT', () => shutdown('SIGINT'))

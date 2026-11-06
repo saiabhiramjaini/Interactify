@@ -6,6 +6,11 @@ const QuestionSchema = new Schema(
       type: String,
       required: true,
       trim: true,
+      maxlength: 500,
+    },
+    // Lower-cased, whitespace-collapsed text used for duplicate detection.
+    normalizedText: {
+      type: String,
     },
     upVotes: {
       type: Number,
@@ -58,6 +63,11 @@ const SessionSchema = new Schema(
       type: String,
       required: true,
       trim: true,
+    },
+    // Secret held only by the presenter; never sent to attendees.
+    ownerToken: {
+      type: String,
+      required: true,
     },
     attendees: [
       {

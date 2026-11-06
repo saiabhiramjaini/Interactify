@@ -1,6 +1,5 @@
-import { WebSocketServer } from "ws";
+import { WebSocketServer, WebSocket, RawData } from "ws";
 import { websocketService } from './services/websocketService'
-import { pubSubService } from '../redis/pubSubService'
 import {
   handleCreateSession,
   handleJoinSession,
@@ -10,14 +9,61 @@ import {
   handleMarkQuestion,
   handleLeaveSession,
   handleCloseSession,
+  notifyAttendeeLeft,
 } from './handlers/messageHandlers'
-import { sessionService } from './services/sessionService';
+
+const MAX_PAYLOAD_BYTES = 64 * 1024
+
+const handlers: Record<string, (socket: WebSocket, payload: any) => Promise<void>> = {
+  create: handleCreateSession,
+  join: handleJoinSession,
+  getSession: handleGetSession,
+  question: handleQuestion,
+  vote: handleVote,
+  markQuestion: handleMarkQuestion,
+  leave: handleLeaveSession,
+  close: handleCloseSession,
+}
+
+export const handleRawMessage = async (socket: WebSocket, message: RawData | string) => {
+  let parsedMessage: any
+  try {
+    parsedMessage = JSON.parse(message.toString())
+  } catch (error) {
+    websocketService.sendToClient(socket, {
+      type: "error",
+      payload: { message: "Invalid message format" },
+    })
+    return
+  }
+
+  const handler = handlers[parsedMessage?.type]
+  if (!handler) {
+    console.error("Unknown message type:", parsedMessage?.type)
+    websocketService.sendToClient(socket, {
+      type: "error",
+      payload: { message: "Unknown message type" },
+    })
+    return
+  }
+
+  await handler(socket, parsedMessage.payload)
+}
+
+export const handleSocketClosed = async (socket: WebSocket) => {
+  const client = websocketService.removeClient(socket)
+
+  if (client?.roomId && client.role === 'attendee' && client.attendee) {
+    try {
+      await notifyAttendeeLeft(client.roomId, client.attendee)
+    } catch (error) {
+      console.error("Error handling client disconnect:", error)
+    }
+  }
+}
 
 export const createWebSocketServer = () => {
-  const wss = new WebSocketServer({ noServer: true });
-
-  // Initialize Redis subscriber when server starts
-  pubSubService.initializeSubscriber();
+  const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_PAYLOAD_BYTES });
 
   wss.on("connection", (socket) => {
     websocketService.addClient(socket)
@@ -26,76 +72,15 @@ export const createWebSocketServer = () => {
       console.error("WebSocket error:", error)
     })
 
-    socket.on("message", async (message) => {
-      try {
-        const parsedMessage = JSON.parse(message.toString())
-
-        switch (parsedMessage.type) {
-          case "create":
-            await handleCreateSession(socket, parsedMessage.payload)
-            break
-          case "join":
-            await handleJoinSession(socket, parsedMessage.payload)
-            break
-          case "getSession":
-            await handleGetSession(socket, parsedMessage.payload)
-            break
-          case "question":
-            await handleQuestion(socket, parsedMessage.payload)
-            break
-          case "vote":
-            await handleVote(socket, parsedMessage.payload)
-            break
-          case "markQuestion":
-            await handleMarkQuestion(socket, parsedMessage.payload)
-            break
-          case "leave":
-            await handleLeaveSession(socket, parsedMessage.payload)
-            break
-          case "close":
-            await handleCloseSession(socket, parsedMessage.payload)
-            break
-          default:
-            console.error("Unknown message type:", parsedMessage.type)
-            websocketService.sendToClient(socket, {
-              type: "error",
-              payload: { message: "Unknown message type" },
-            })
-        }
-      } catch (error) {
-        console.error("Error parsing message:", error)
-        websocketService.sendToClient(socket, {
-          type: "error",
-          payload: { message: "Invalid message format" },
-        })
-      }
+    socket.on("message", (message) => {
+      handleRawMessage(socket, message).catch((error) => {
+        console.error("Error handling message:", error)
+      })
     })
 
-    socket.on("close", async () => {
-      const client = websocketService.removeClient(socket)
-      
-      if (client && client.roomId && client.attendee) {
-        try {
-          const session = await sessionService.leaveSession(client.roomId, client.attendee.id)
-          
-          if (session) {
-            websocketService.broadcastToRoom(client.roomId, {
-              type: "attendeeLeft",
-              payload: { attendee: client.attendee, attendees: session.attendees },
-            })
-          }
-        } catch (error) {
-          console.error("Error handling client disconnect:", error)
-        }
-      }
+    socket.on("close", () => {
+      handleSocketClosed(socket)
     })
-  })
-
-  // Graceful shutdown
-  process.on('SIGTERM', () => {
-    console.log('Shutting down...')
-    pubSubService.disconnect()
-    wss.close()
   })
 
   return wss
