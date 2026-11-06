@@ -47,10 +47,12 @@ Interactify solves the challenge of managing audience questions during seminars 
 - **Mongoose** (ODM for MongoDB)
 
 ### Infrastructure
-- **Docker** (Containerization)
-- **Docker Hub** (Image repository)
-- **AWS EC2** (Cloud hosting)
+- **Android phone + Termux** (Server host: a Samsung Galaxy J6)
+- **PM2** (Keeps the server and tunnel running)
+- **Cloudflare Tunnel + Access** (Public URL for the server, and authenticated SSH for deploys)
+- **Vercel** (Client hosting)
 - **GitHub Actions** (CI/CD pipelines)
+- **Docker** (Local Redis/Kafka, and an optional container image for the server)
 
 ## Architecture
 
@@ -64,13 +66,27 @@ Interactify solves the challenge of managing audience questions during seminars 
 3. **Kafka (optional)**: When enabled, session writes are produced to the `db-operations` topic (keyed by room so each room's writes stay in order), applied by a consumer, and acknowledged back over Redis before the server replies
 4. **MongoDB**: Persistent storage for sessions and questions
 
-![Image](https://github.com/user-attachments/assets/2a6d5681-cae3-48db-93a3-aea68e6be29f)
+The diagrams above show the full design with Kafka. In production Kafka is turned off, and writes go straight from the server to MongoDB:
+
+```mermaid
+flowchart LR
+    user([User]) -- website --> client["Client<br/>Next.js on Vercel"]
+    client -- "wss://" --> cf["Cloudflare Tunnel"]
+
+    subgraph phone["Samsung Galaxy J6 · Termux"]
+        cfd["cloudflared<br/>(PM2)"] --> server["WebSocket server<br/>Node.js + Express<br/>(PM2, port 8080)"]
+        server <--> redis[("Redis<br/>pub/sub")]
+    end
+
+    cf --> cfd
+    server -- Mongoose --> mongo[("MongoDB Atlas")]
+```
 
 
 ## Setup & Installation
 
 ### Prerequisites
-- Node.js (v18+)
+- Node.js (v20+; CI uses v24)
 - Docker
 - Docker Compose
 - MongoDB Atlas account
@@ -151,36 +167,60 @@ The tests run against an in-memory MongoDB (downloaded on first run), so no exte
 
 ## Deployment
 
+The server runs on an old Samsung Galaxy J6 in Termux. PM2 keeps it running, and a Cloudflare Tunnel exposes it to the internet, so the phone needs no public IP or open ports. The client is hosted on Vercel.
+
 ### CI/CD Pipeline
-The project uses GitHub Actions for continuous integration and deployment:
-1. **Build Stage** (`build.yaml`):
-   - Runs on pull requests and pushes to main
+
+GitHub Actions runs two workflows:
+
+1. **Build and Test** (`build.yaml`)
+   - Runs on pull requests to `main` and on pushes to `main`
    - Builds and tests the server
    - Builds (and type-checks) the client
 
-2. **Deploy Stage** (`deploy.yaml`):
-   - Runs on pushes to main that touch `server/` or `deploy/` (or manually from the Actions tab)
-   - Builds and tests the server first; deployment only runs if that succeeds
-   - Copies the compiled build to the phone server through the Cloudflare tunnel
-   - Runs `deploy/deploy.sh` on the phone: updates the code, installs production dependencies, restarts the server with PM2, and rolls back if `/health` fails
+2. **Deploy server to phone** (`deploy.yaml`)
+   - Runs on pushes to `main` that touch `server/` or `deploy/`, or manually from the Actions tab
+   - Builds and tests the server again; nothing reaches the phone unless the tests pass
+   - Packages the compiled `dist/` and copies it to the phone over SSH, through the Cloudflare tunnel (authenticated by a Cloudflare Access service token)
+   - Runs [`deploy/deploy.sh`](deploy/deploy.sh) on the phone, which:
+     - fast-forwards the repo on the phone to the deployed commit
+     - installs production dependencies only
+     - swaps in the new build and restarts the server with PM2
+     - waits for `/health`, and restores the previous build if it doesn't become healthy within 30 seconds
 
-   See [`deploy/README.md`](deploy/README.md) for the one-time setup.
+```mermaid
+flowchart TD
+    push["Push to main"] --> build["build.yaml<br/>build + test server and client"]
+    push -- "server/ or deploy/ changed" --> ci["deploy.yaml<br/>npm ci → build → test"]
+    ci -- "tests fail" --> stop(["Deploy stops"])
+    ci -- "tests pass" --> pkg["Package server/dist"]
+    pkg -- "scp + ssh via<br/>Cloudflare tunnel" --> sh
 
-![Image](https://github.com/user-attachments/assets/15969064-a942-4a55-b123-381616105984)
+    subgraph phone["Phone (Termux)"]
+        sh["deploy/deploy.sh"] --> git["git fast-forward"]
+        git --> deps["npm ci --omit=dev"]
+        deps --> restart["Unpack dist, pm2 restart"]
+        restart --> health{"/health OK<br/>within 30s?"}
+        health -- yes --> save(["pm2 save · deployed"])
+        health -- no --> rollback(["Restore previous build"])
+    end
+```
 
+The phone never builds anything: its 32-bit Android userspace can't install the build and test tooling, and building in CI means the phone runs exactly what passed the tests.
 
-
-## Actual Deployment
+See [`deploy/README.md`](deploy/README.md) for the one-time setup: phone packages, the Cloudflare tunnel and Access policy, the deploy key, GitHub secrets, and starting everything on boot with Termux:Boot.
 
 ### Kafka Is Optional
-
-The server runs on an old Samsung Galaxy J6 in Termux, managed by PM2 and exposed through a Cloudflare Tunnel, instead of AWS EC2. The `Dockerfile` still works for container hosts.
 
 There is a single server in `server/`. Kafka is off by default (`ENABLE_KAFKA=false`), which is how it runs on the phone:
 
 - Writes go straight to MongoDB, and kafkajs is never loaded, keeping memory use low
 - WebSocket communication and Redis pub/sub work exactly as with Kafka enabled
 - Set `ENABLE_KAFKA=true` (and run Zookeeper and Kafka) to route writes through Kafka instead
+
+### Other Hosts
+
+The server's `Dockerfile` still builds a production image for any container host. It listens on port 8000 inside the container unless you pass `-e PORT=...`.
 
 
 ## Scaling Test
